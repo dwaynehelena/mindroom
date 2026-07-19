@@ -185,4 +185,5 @@ def test_usage_telemetry_is_installed_when_full_request_logging_is_disabled(tmp_
     install_logging.assert_called_once()
     assert install_logging.call_args.args == (model,)
     assert install_logging.call_args.kwargs["configured_provider"] == "openai"
+    assert install_logging.call_args.kwargs["runtime_paths"] == runtime_paths_for(config)
     assert install_logging.call_args.kwargs["debug_config"].log_llm_requests is False

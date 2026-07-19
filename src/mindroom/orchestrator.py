@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, cast, overload
 from uuid import uuid4
 
@@ -63,6 +64,9 @@ from mindroom.mcp.manager import MCPServerManager
 from mindroom.mcp.registry import mcp_tool_name
 from mindroom.mcp.toolkit import bind_mcp_server_manager
 from mindroom.memory import MemoryAutoFlushWorker, auto_flush_enabled
+from mindroom.personal_ops_executors import build_action_executors
+from mindroom.personal_ops_service import PersonalOpsService
+from mindroom.personal_ops_tool_runtime import PersonalOpsToolRuntime
 from mindroom.runtime_shutdown import ORDERLY_SHUTDOWN
 from mindroom.runtime_state import reset_runtime_state, set_runtime_failed, set_runtime_ready, set_runtime_starting
 from mindroom.scheduling_executor import set_scheduling_hook_registry
@@ -115,7 +119,6 @@ from .runtime_support import (
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
-    from pathlib import Path
     from types import FrameType
 
     from mindroom.hooks import HookMatrixAdmin, HookMessageSender, HookRoomStatePutter, HookRoomStateQuerier
@@ -227,6 +230,7 @@ class _MultiAgentOrchestrator:
     _external_trigger_runtime: ExternalTriggerRuntimeCoordinator = field(init=False, repr=False)
     _approval_transport: ApprovalMatrixTransport = field(init=False, repr=False)
     _startup_maintenance: StartupMaintenanceController = field(init=False, repr=False)
+    _personal_ops_service: PersonalOpsService = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Store canonical derived paths from the explicit runtime context."""
@@ -243,6 +247,17 @@ class _MultiAgentOrchestrator:
         self._external_trigger_runtime = ExternalTriggerRuntimeCoordinator(
             runtime_paths=self.runtime_paths,
             api_enabled=self.api_enabled,
+        )
+        personal_ops_tools = PersonalOpsToolRuntime(self.runtime_paths, lambda: self.config)
+        self._personal_ops_service = PersonalOpsService(
+            runtime_paths=self.runtime_paths,
+            tool_invoker=personal_ops_tools,
+            executors=None,
+            executor_factory=lambda config: build_action_executors(
+                config,
+                invoker=personal_ops_tools,
+                repository_root=Path(__file__).resolve().parents[2],
+            ),
         )
         self.config_reload = ConfigReloadLifecycle(
             runtime_paths=self.runtime_paths,
@@ -580,6 +595,7 @@ class _MultiAgentOrchestrator:
         await self._sync_event_cache_service(config)
         self._configure_approval_store_transport()
         await self._sync_memory_auto_flush_worker()
+        await self._personal_ops_service.reload(config.personal_ops)
 
     async def _stop_mcp_manager(self) -> None:
         """Stop the MCP manager and clear the active runtime binding."""
@@ -1134,6 +1150,8 @@ class _MultiAgentOrchestrator:
             bot.config = plan.new_config
             bot.enable_streaming = plan.new_config.defaults.enable_streaming
             bot.hook_registry = self.hook_registry
+            if isinstance(bot, AgentBot):
+                await bot._runtime_bridge.reload(plan.new_config)
 
         for entity_name, bot in unchanged_bots:
             try:
@@ -1697,6 +1715,7 @@ class _MultiAgentOrchestrator:
         await self.config_reload.cancel()
         await self._startup_maintenance.cancel()
         await self._stop_memory_auto_flush_worker()
+        await self._personal_ops_service.close()
         await self._knowledge_source_watcher.shutdown()
         await self._knowledge_refresh_scheduler.shutdown()
         await self._cancel_bot_start_tasks()

@@ -33,6 +33,9 @@ redis:
 media_store_path: "/data/media_store"
 signing_key_path: "/data/signing.key"
 
+app_service_config_files:
+  - /data/telegram-registration.yaml
+
 # Logging
 log_config: "/data/log.config"
 

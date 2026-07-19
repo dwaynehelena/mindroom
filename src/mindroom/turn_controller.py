@@ -324,6 +324,7 @@ class TurnControllerDeps:
     edit_regenerator: _EditRegenerator
     ingress: IngressValidator
     restart_retry: SyncRestartRetryQueue
+    runtime_bridge: object | None = None
 
 
 @dataclass
@@ -1656,6 +1657,17 @@ class TurnController:
             msg = "Prepared dispatch target room does not match the Matrix room"
             raise ValueError(msg)
         action = self.deps.turn_policy.effective_response_action(action)
+        # This is deliberately after TurnPolicy's final selected-response
+        # decision, never raw Matrix ingress. A runtime delivery is terminal and
+        # participates in the same handled-turn ledger as native responders.
+        runtime_bridge = self.deps.runtime_bridge
+        if action.kind == "individual" and runtime_bridge is not None:
+            delivery = await runtime_bridge.maybe_forward(envelope=dispatch.envelope)
+            if delivery is not None:
+                self._mark_source_events_responded(
+                    replace(handled_turn, response_event_id=delivery.matrix_event_id),
+                )
+                return
         dispatch_timing = get_dispatch_pipeline_timing(event.source)
         if dispatch_timing is not None:
             dispatch_timing.note(response_action_kind=action.kind)

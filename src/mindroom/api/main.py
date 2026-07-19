@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import threading
 from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict, dataclass, replace
@@ -23,6 +24,7 @@ from mindroom.api.config_lifecycle import ApiSnapshot, ApiState, ConfigLoadResul
 # Import routers
 from mindroom.api.credentials import router as credentials_router
 from mindroom.api.dynamic_workflows import router as dynamic_workflows_router
+from mindroom.api.edge_fleet import create_edge_fleet_admin_router, create_edge_fleet_router
 from mindroom.api.external_triggers import router as external_triggers_router
 from mindroom.api.frontend import router as frontend_router
 from mindroom.api.homeassistant_integration import router as homeassistant_router
@@ -37,6 +39,7 @@ from mindroom.api.skills import router as skills_router
 from mindroom.api.tools import router as tools_router
 from mindroom.api.workers import router as workers_router
 from mindroom.credentials_sync import sync_env_to_credentials
+from mindroom.edge_fleet import EdgeFleet, EnrollmentAuthority
 from mindroom.embedder_health import get_embedder_failure
 from mindroom.knowledge import KnowledgeRefreshScheduler, reconcile_knowledge_mode_transition_states
 from mindroom.knowledge.watch import KnowledgeSourceWatcher
@@ -71,6 +74,7 @@ _DASHBOARD_CORS_EXPOSE_HEADERS = (
     config_lifecycle.CONFIG_GENERATION_HEADER,
     config_lifecycle.CONFIG_USES_INCLUDES_HEADER,
 )
+_EDGE_ENROLLMENT_KEY_ENV = "MINDROOM_EDGE_ENROLLMENT_KEY"
 _DEFAULT_DASHBOARD_CORS_ALLOWED_ORIGINS = (
     "http://localhost:3003",
     "http://localhost:5173",
@@ -501,19 +505,26 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     watch_task = asyncio.create_task(_watch_config(stop_event, _app))
     worker_cleanup_task = asyncio.create_task(_worker_cleanup_loop(stop_event, _app))
 
-    yield
+    edge_fleet = getattr(_app.state, "mindroom_edge_fleet", None)
+    if edge_fleet is not None:
+        await edge_fleet.open()
 
-    stop_event.set()
-    watch_task.cancel()
-    worker_cleanup_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await watch_task
-    with suppress(asyncio.CancelledError):
-        await worker_cleanup_task
-    if standalone_knowledge_source_watcher is not None:
-        await standalone_knowledge_source_watcher.shutdown()
-    if api_owned_knowledge_refresh_scheduler is not None:
-        await api_owned_knowledge_refresh_scheduler.shutdown()
+    try:
+        yield
+    finally:
+        if edge_fleet is not None:
+            await edge_fleet.close()
+        stop_event.set()
+        watch_task.cancel()
+        worker_cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await watch_task
+        with suppress(asyncio.CancelledError):
+            await worker_cleanup_task
+        if standalone_knowledge_source_watcher is not None:
+            await standalone_knowledge_source_watcher.shutdown()
+        if api_owned_knowledge_refresh_scheduler is not None:
+            await api_owned_knowledge_refresh_scheduler.shutdown()
 
 
 def bind_orchestrator_knowledge_refresh_scheduler(
@@ -615,6 +626,31 @@ def _add_dashboard_cors_middleware(api_app: FastAPI, runtime_paths: constants.Ru
     )
 
 
+def _edge_fleet_from_runtime_paths(runtime_paths: constants.RuntimePaths) -> EdgeFleet | None:
+    """Build the optional edge fleet from a strict secret reference."""
+    encoded = (runtime_paths.env_value(_EDGE_ENROLLMENT_KEY_ENV, default="") or "").strip()
+    if not encoded:
+        return None
+    try:
+        key = base64.b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True)
+    except (ValueError, TypeError) as exc:
+        message = f"{_EDGE_ENROLLMENT_KEY_ENV} must be URL-safe base64"
+        raise RuntimeError(message) from exc
+    if len(key) < 32:
+        message = f"{_EDGE_ENROLLMENT_KEY_ENV} must decode to at least 32 bytes"
+        raise RuntimeError(message)
+    return EdgeFleet(runtime_paths.storage_root / "edge_fleet.db", EnrollmentAuthority(key))
+
+
+def _mount_edge_fleet(api_app: FastAPI, fleet: EdgeFleet | None) -> None:
+    """Mount both isolated fleet surfaces only for an explicitly enabled fleet."""
+    api_app.state.mindroom_edge_fleet = fleet
+    if fleet is None:
+        return
+    api_app.include_router(create_edge_fleet_router(fleet))
+    api_app.include_router(create_edge_fleet_admin_router(fleet), dependencies=[Depends(verify_user)])
+
+
 _runtime_paths = constants.resolve_primary_runtime_paths()
 _api_docs = _api_docs_kwargs(_runtime_paths)
 app = FastAPI(
@@ -625,6 +661,7 @@ app = FastAPI(
     openapi_url=_api_docs["openapi_url"],
 )
 initialize_api_app(app, _runtime_paths)
+_edge_fleet = _edge_fleet_from_runtime_paths(_runtime_paths)
 _add_dashboard_cors_middleware(app, _runtime_paths)
 
 
@@ -702,6 +739,7 @@ app.include_router(openai_compat_router)  # Uses its own bearer auth, not verify
 app.include_router(report_publishing_public_router)
 app.include_router(external_triggers_router)
 app.include_router(dynamic_workflows_router, dependencies=[Depends(verify_user)])
+_mount_edge_fleet(app, _edge_fleet)
 
 
 @app.get("/api/health")

@@ -13,6 +13,8 @@ from structlog.testing import capture_logs
 
 from mindroom.config.main import Config
 from mindroom.config.models import DebugConfig
+from mindroom.constants import tracking_dir
+from mindroom.flight_recorder import FlightRecorder
 from mindroom.llm_request_logging import (
     _RequestLogRef,
     _write_llm_response_log,
@@ -21,6 +23,7 @@ from mindroom.llm_request_logging import (
     install_llm_request_logging,
     stream_with_llm_request_log_context,
 )
+from tests.conftest import test_runtime_paths
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -554,27 +557,39 @@ async def test_llm_response_usage_recorded_when_stream_is_abandoned(tmp_path: Pa
             yield ModelResponse(content="ok", response_usage=MessageMetrics(input_tokens=3, cache_read_tokens=42))
             yield ModelResponse(content="never consumed")
 
+    runtime_paths = test_runtime_paths(tmp_path)
     model = _EarlyUsageModel()
     install_llm_request_logging(
         model,
         agent_name="default",
         debug_config=DebugConfig(log_llm_requests=True, llm_request_log_dir=str(tmp_path)),
         default_log_dir=tmp_path / "unused",
+        runtime_paths=runtime_paths,
     )
 
-    stream = model.ainvoke_stream(
-        messages=[Message(role="user", content="hello")],
-        assistant_message=Message(role="assistant"),
-        tools=[],
-    )
-    first_chunk = await anext(stream)
-    assert first_chunk.content == "ok"
-    await stream.aclose()
+    with bind_llm_request_log_context(correlation_id="corr-abandoned"):
+        stream = model.ainvoke_stream(
+            messages=[Message(role="user", content="hello")],
+            assistant_message=Message(role="assistant"),
+            tools=[],
+        )
+        first_chunk = await anext(stream)
+        assert first_chunk.content == "ok"
+        await stream.aclose()
 
     request_entry, response_entry = _read_log_entries(tmp_path)
     assert response_entry["record"] == "response"
     assert response_entry["request_log_id"] == request_entry["request_log_id"]
     assert response_entry["usage"]["cache_read_tokens"] == 42
+    recorder = FlightRecorder(tracking_dir(runtime_paths) / "flight_recorder.db")
+    await recorder.open()
+    try:
+        records = await recorder.records("corr-abandoned")
+    finally:
+        await recorder.close()
+    assert len(records) == 1
+    assert records[0].payload["status"] == "abandoned"
+    assert records[0].payload["usage"]["cache_read_tokens"] == 42
 
 
 @pytest.mark.asyncio
@@ -592,3 +607,91 @@ async def test_llm_response_record_reuses_the_request_records_file(tmp_path: Pat
     entries = [json.loads(line) for line in request_day_file.read_text(encoding="utf-8").splitlines()]
     assert entries[0]["record"] == "response"
     assert entries[0]["request_log_id"] == "req-1"
+
+
+@pytest.mark.asyncio
+async def test_model_call_is_recorded_without_prompt_or_completion_content(tmp_path: Path) -> None:
+    """Production model telemetry should join the run ledger without storing content."""
+    runtime_paths = test_runtime_paths(tmp_path)
+    model = _FakeModel(response_usage=MessageMetrics(input_tokens=5, output_tokens=7, cost=0.001234))
+    install_llm_request_logging(
+        model,
+        agent_name="default",
+        debug_config=DebugConfig(),
+        default_log_dir=tmp_path / "logs",
+        configured_provider="openai",
+        runtime_paths=runtime_paths,
+    )
+
+    with bind_llm_request_log_context(correlation_id="corr-flight", full_prompt="private prompt"):
+        response = await model.ainvoke(messages=[Message(role="user", content="private input")])
+
+    assert response.content == "ok"
+    recorder = FlightRecorder(tracking_dir(runtime_paths) / "flight_recorder.db")
+    await recorder.open()
+    try:
+        records = await recorder.records("corr-flight")
+    finally:
+        await recorder.close()
+    assert len(records) == 1
+    record = records[0]
+    assert record.kind == "model_call"
+    assert record.side_effect is False
+    assert record.duration_ms is not None
+    assert record.cost_microunits == 1234
+    assert record.payload == {
+        "agent_id": "default",
+        "call_id": record.payload["call_id"],
+        "model_id": "test-model",
+        "provider": "OpenAI",
+        "status": "completed",
+        "usage": {
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "input_tokens": 5,
+            "output_tokens": 7,
+        },
+        "usage_available": True,
+    }
+    serialized = json.dumps(record.payload)
+    assert "private prompt" not in serialized
+    assert "private input" not in serialized
+    assert "content" not in record.payload
+    assert "messages" not in record.payload
+
+
+@pytest.mark.asyncio
+async def test_failed_model_call_records_only_exception_class(tmp_path: Path) -> None:
+    """Provider failures should be auditable without persisting exception text."""
+
+    @dataclass
+    class _FailingModel(_FakeModel):
+        async def ainvoke(self, *_args: object, **_kwargs: object) -> ModelResponse:
+            message = "private provider response"
+            raise RuntimeError(message)
+
+    runtime_paths = test_runtime_paths(tmp_path)
+    model = _FailingModel()
+    install_llm_request_logging(
+        model,
+        agent_name="default",
+        debug_config=DebugConfig(),
+        default_log_dir=tmp_path / "logs",
+        runtime_paths=runtime_paths,
+    )
+
+    with (
+        bind_llm_request_log_context(correlation_id="corr-failed"),
+        pytest.raises(RuntimeError, match="private provider response"),
+    ):
+        await model.ainvoke()
+
+    recorder = FlightRecorder(tracking_dir(runtime_paths) / "flight_recorder.db")
+    await recorder.open()
+    try:
+        records = await recorder.records("corr-failed")
+    finally:
+        await recorder.close()
+    assert records[0].payload["status"] == "failed"
+    assert records[0].payload["error_class"] == "builtins.RuntimeError"
+    assert "private provider response" not in json.dumps(records[0].payload)

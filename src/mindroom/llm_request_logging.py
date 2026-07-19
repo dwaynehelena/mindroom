@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, fields, is_dataclass
@@ -17,6 +19,7 @@ from agno.models.message import Message
 from pydantic import BaseModel
 
 from mindroom.constants import MATRIX_SOURCE_EVENT_IDS_METADATA_KEY, MATRIX_SOURCE_EVENT_PROMPTS_METADATA_KEY
+from mindroom.flight_recorder import record_flight_event
 from mindroom.logging_config import get_logger
 from mindroom.model_usage import context_input_tokens_from_counts
 from mindroom.redaction import redact_sensitive_data
@@ -30,6 +33,7 @@ if TYPE_CHECKING:
     from agno.models.response import ModelResponse
 
     from mindroom.config.models import DebugConfig
+    from mindroom.constants import RuntimePaths
 
 _INSTALLED_ATTR = "_mindroom_llm_request_logging_installed"
 logger = get_logger(__name__)
@@ -330,6 +334,16 @@ def _usage_payload(usage: MessageMetrics) -> dict[str, _JSONValue]:
     }
 
 
+def _cost_microunits(usage: MessageMetrics | None) -> int | None:
+    """Convert a valid provider-reported USD cost to integer microdollars."""
+    if usage is None or not isinstance(usage.cost, int | float):
+        return None
+    cost = float(usage.cost)
+    if not math.isfinite(cost) or cost < 0:
+        return None
+    return round(cost * 1_000_000)
+
+
 def _log_llm_usage(
     *,
     model: Model,
@@ -417,6 +431,47 @@ async def _write_llm_response_log(
     await asyncio.to_thread(_write_jsonl_line, request_log_ref.log_path, payload)
 
 
+async def _record_model_call(
+    *,
+    runtime_paths: RuntimePaths | None,
+    model: Model,
+    agent_name: str,
+    configured_provider: str | None,
+    request_context: dict[str, _JSONValue],
+    call_id: str,
+    status: str,
+    started_at: float,
+    usage: MessageMetrics | None,
+    error: BaseException | None = None,
+) -> None:
+    """Record privacy-safe provider evidence in the tamper-evident run ledger."""
+    if runtime_paths is None:
+        return
+    correlation_id = request_context.get("correlation_id")
+    run_id = correlation_id if isinstance(correlation_id, str) and correlation_id else f"llm:{call_id}"
+    payload: dict[str, _JSONValue] = {
+        "agent_id": agent_name,
+        "call_id": call_id,
+        "model_id": model.id,
+        "provider": model.provider or configured_provider,
+        "status": status,
+        "usage_available": usage is not None,
+    }
+    if usage is not None:
+        payload["usage"] = _usage_payload(usage)
+    if error is not None:
+        payload["error_class"] = f"{type(error).__module__}.{type(error).__qualname__}"
+    await record_flight_event(
+        runtime_paths,
+        run_id=run_id,
+        kind="model_call",
+        payload=payload,
+        side_effect=False,
+        duration_ms=max(0, round((time.monotonic() - started_at) * 1000)),
+        cost_microunits=_cost_microunits(usage),
+    )
+
+
 async def _write_llm_request_log_if_present(
     *,
     model: Model,
@@ -472,13 +527,14 @@ async def _write_llm_request_log_if_enabled(
     )
 
 
-def install_llm_request_logging(
+def install_llm_request_logging(  # noqa: C901, PLR0915
     model: Model,
     *,
     agent_name: str,
     debug_config: DebugConfig,
     default_log_dir: Path,
     configured_provider: str | None = None,
+    runtime_paths: RuntimePaths | None = None,
 ) -> None:
     """Wrap one model for usage telemetry and optional full request logging."""
     model_dict = vars(model)
@@ -492,8 +548,10 @@ def install_llm_request_logging(
         if id(model) in _ACTIVE_MODEL_CALLS.get():
             return original_ainvoke(*args, **kwargs)
         request_context = _snapshot_request_log_context()
+        call_id = uuid4().hex
 
         async def _invoke() -> ModelResponse:
+            started_at = time.monotonic()
             request_log_ref = await _write_llm_request_log_if_enabled(
                 model=model,
                 agent_name=agent_name,
@@ -502,8 +560,35 @@ def install_llm_request_logging(
                 default_log_dir=default_log_dir,
                 request_context=request_context,
             )
-            with _model_call_scope(model):
-                response = await original_ainvoke(*args, **kwargs)
+            try:
+                with _model_call_scope(model):
+                    response = await original_ainvoke(*args, **kwargs)
+            except BaseException as exc:
+                status = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
+                await _record_model_call(
+                    runtime_paths=runtime_paths,
+                    model=model,
+                    agent_name=agent_name,
+                    configured_provider=configured_provider,
+                    request_context=request_context,
+                    call_id=call_id,
+                    status=status,
+                    started_at=started_at,
+                    usage=None,
+                    error=exc,
+                )
+                raise
+            await _record_model_call(
+                runtime_paths=runtime_paths,
+                model=model,
+                agent_name=agent_name,
+                configured_provider=configured_provider,
+                request_context=request_context,
+                call_id=call_id,
+                status="completed",
+                started_at=started_at,
+                usage=response.response_usage,
+            )
             await _write_llm_response_log(
                 model=model,
                 agent_name=agent_name,
@@ -520,8 +605,10 @@ def install_llm_request_logging(
         if id(model) in _ACTIVE_MODEL_CALLS.get():
             return original_ainvoke_stream(*args, **kwargs)
         request_context = _snapshot_request_log_context()
+        call_id = uuid4().hex
 
         async def _stream() -> AsyncIterator[ModelResponse]:
+            started_at = time.monotonic()
             request_log_ref = await _write_llm_request_log_if_enabled(
                 model=model,
                 agent_name=agent_name,
@@ -531,6 +618,8 @@ def install_llm_request_logging(
                 request_context=request_context,
             )
             last_usage: MessageMetrics | None = None
+            status = "abandoned"
+            error: BaseException | None = None
             # finally: an abandoned stream (consumer break -> aclose()) must
             # still record any usage already reported; awaiting during aclose()
             # is allowed for async generators as long as nothing is yielded.
@@ -539,11 +628,32 @@ def install_llm_request_logging(
                     context_factory=lambda: _model_call_scope(model),
                     stream_factory=lambda: original_ainvoke_stream(*args, **kwargs),
                 )
-                async for chunk in scoped_stream:
-                    if chunk.response_usage is not None:
-                        last_usage = chunk.response_usage
-                    yield chunk
+                try:
+                    async for chunk in scoped_stream:
+                        if chunk.response_usage is not None:
+                            last_usage = chunk.response_usage
+                        yield chunk
+                    status = "completed"
+                except BaseException as exc:
+                    error = exc
+                    if isinstance(exc, asyncio.CancelledError):
+                        status = "cancelled"
+                    elif not isinstance(exc, GeneratorExit):
+                        status = "failed"
+                    raise
             finally:
+                await _record_model_call(
+                    runtime_paths=runtime_paths,
+                    model=model,
+                    agent_name=agent_name,
+                    configured_provider=configured_provider,
+                    request_context=request_context,
+                    call_id=call_id,
+                    status=status,
+                    started_at=started_at,
+                    usage=last_usage,
+                    error=error,
+                )
                 await _write_llm_response_log(
                     model=model,
                     agent_name=agent_name,

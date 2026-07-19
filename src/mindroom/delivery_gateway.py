@@ -196,6 +196,7 @@ class SendTextRequest:  # noqa: D101
     skip_mentions: bool = False
     tool_trace: list[ToolTraceEntry] | None = None
     extra_content: dict[str, Any] | None = None
+    transaction_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -503,7 +504,12 @@ class DeliveryGateway:
             )
         if request.skip_mentions:
             content[SKIP_MENTIONS_KEY] = True
-        delivered = await send_message_result(client, resolved_target.room_id, content)
+        delivered = await send_message_result(
+            client,
+            resolved_target.room_id,
+            content,
+            transaction_id=request.transaction_id,
+        )
         if delivered is not None:
             self.deps.resolver.deps.conversation_cache.notify_outbound_message(
                 resolved_target.room_id,

@@ -16,6 +16,7 @@ from weakref import WeakKeyDictionary
 
 from agno.tools.function import FunctionCall
 
+from mindroom.flight_recorder import record_flight_event
 from mindroom.hooks import (
     EVENT_TOOL_AFTER_CALL,
     EVENT_TOOL_BEFORE_CALL,
@@ -42,7 +43,12 @@ from mindroom.tool_system.runtime_context import (
     get_tool_runtime_context,
     resolve_tool_runtime_hook_bindings,
 )
-from mindroom.tool_system.tool_calls import ToolCallTiming, record_tool_failure, record_tool_success
+from mindroom.tool_system.tool_calls import (
+    ToolCallTiming,
+    record_tool_failure,
+    record_tool_success,
+    sanitize_failure_value,
+)
 from mindroom.tool_system.worker_routing import active_tool_execution_identity
 
 if TYPE_CHECKING:
@@ -275,6 +281,45 @@ def _record_debug_tool_success(
         execution_identity=dispatch_context.execution_identity if dispatch_context is not None else None,
         runtime_paths=resolved_context.runtime_paths,
     )
+
+
+async def _record_tool_flight(
+    *,
+    tool_name: str,
+    arguments: dict[str, object],
+    result: object,
+    duration_ms: float,
+    success: bool,
+    resolved_context: _ResolvedToolContext,
+) -> None:
+    """Record every attempted tool as side-effecting unless a future registry proves purity."""
+    runtime_paths = resolved_context.runtime_paths
+    if runtime_paths is None:
+        return
+    payload = {
+        "agent_name": resolved_context.agent_name or None,
+        "arguments": sanitize_failure_value(arguments),
+        "result": sanitize_failure_value(result),
+        "room_id": resolved_context.room_id,
+        "success": success,
+        "thread_id": resolved_context.thread_id,
+        "tool_name": tool_name,
+    }
+    try:
+        await record_flight_event(
+            runtime_paths,
+            run_id=resolved_context.correlation_id,
+            kind="tool_call",
+            payload=payload,
+            side_effect=True,
+            duration_ms=max(0, round(duration_ms)),
+        )
+    except Exception:
+        logger.exception(
+            "Failed to append tool flight record",
+            tool_name=tool_name,
+            correlation_id=resolved_context.correlation_id,
+        )
 
 
 def _format_declined_result(tool_name: str, reason: str) -> str:
@@ -762,6 +807,14 @@ async def _execute_bridge(
             resolved_context=resolved_context,
             dispatch_context=effective_dispatch_context,
         )
+        await _record_tool_flight(
+            tool_name=tool_name,
+            arguments=args,
+            result=result,
+            duration_ms=duration_ms,
+            success=True,
+            resolved_context=resolved_context,
+        )
         await _maybe_emit_after_call_timed(
             has_after_hooks=has_after_hooks,
             timing=timing,
@@ -821,6 +874,14 @@ async def _execute_bridge(
                 correlation_id=resolved_context.correlation_id,
                 channel=resolved_context.channel,
             )
+        await _record_tool_flight(
+            tool_name=tool_name,
+            arguments=args,
+            result={"error_type": type(error).__name__, "error_message": str(error)},
+            duration_ms=duration_ms,
+            success=False,
+            resolved_context=resolved_context,
+        )
         await _maybe_emit_after_call_timed(
             has_after_hooks=has_after_hooks,
             timing=timing,
@@ -850,6 +911,14 @@ async def _execute_bridge(
         timing=timing.record_timing(),
         resolved_context=resolved_context,
         dispatch_context=effective_dispatch_context,
+    )
+    await _record_tool_flight(
+        tool_name=tool_name,
+        arguments=args,
+        result=result,
+        duration_ms=duration_ms,
+        success=True,
+        resolved_context=resolved_context,
     )
     await _maybe_emit_after_call_timed(
         has_after_hooks=has_after_hooks,

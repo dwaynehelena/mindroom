@@ -36,6 +36,7 @@ services:
     volumes:
       - ./docker/synapse:/data
       - synapse_media:/data/media_store
+      - ${HOME}/.mindroom/telegram-bridge/registration.yaml:/data/telegram-registration.yaml:ro
     entrypoint: /data/entrypoint.sh
     ports:
       - "8008:8008"
@@ -49,6 +50,18 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+
+  telegram-bridge:
+    image: dock.mau.dev/mautrix/telegram:latest
+    container_name: mindroom-telegram-bridge
+    restart: unless-stopped
+    volumes:
+      - ${HOME}/.mindroom/telegram-bridge:/data
+    networks:
+      - default
+    depends_on:
+      synapse:
+        condition: service_healthy
 
 volumes:
   postgres_data:

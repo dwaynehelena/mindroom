@@ -18,12 +18,13 @@ import pytest
 from mindroom import background_tasks as background_tasks_module
 from mindroom import response_runner
 from mindroom.background_tasks import wait_for_background_tasks
-from mindroom.constants import STREAM_STATUS_KEY, STREAM_STATUS_PENDING
+from mindroom.constants import STREAM_STATUS_KEY, STREAM_STATUS_PENDING, tracking_dir
 from mindroom.conversation_resolver import ConversationResolver, MessageContext
 from mindroom.delivery_gateway import DeliveryGateway, SendTextRequest
 from mindroom.dispatch_source import ScheduledHistoryBudget
 from mindroom.entity_resolution import current_internal_sender_ids
 from mindroom.final_delivery import FinalDeliveryOutcome, StreamTransportOutcome
+from mindroom.flight_recorder import FlightRecorder
 from mindroom.history.turn_recorder import TurnRecorder
 from mindroom.logging_config import get_logger
 from mindroom.matrix.cache import ThreadHistoryResult
@@ -1135,6 +1136,32 @@ async def test_terminal_settlement_finalizes_and_runs_post_effects_once(
     build_post_outcome.assert_called_once_with(delivery_outcome)
     finalize.assert_awaited_once()
     post_effects.assert_awaited_once()
+    recorder = FlightRecorder(tracking_dir(coordinator.deps.runtime_paths) / "flight_recorder.db")
+    await recorder.open()
+    try:
+        records = await recorder.records("$event")
+    finally:
+        await recorder.close()
+    assert [record.kind for record in records] == ["message", "message"]
+    assert records[0].payload == {
+        "agent_id": coordinator.deps.agent_name,
+        "direction": "inbound",
+        "room_id": "!room:localhost",
+        "source_event_id": "$event",
+        "thread_id": None,
+    }
+    assert records[1].payload == {
+        "agent_id": coordinator.deps.agent_name,
+        "delivery_kind": delivery_outcome.delivery_kind,
+        "direction": "outbound",
+        "event_id": "$response",
+        "is_visible_response": True,
+        "status": delivery_outcome.terminal_status,
+        "suppressed": False,
+    }
+    assert records[0].side_effect is False
+    assert records[1].side_effect is True
+    assert "hello" not in str(records[0].payload)
 
 
 @pytest.mark.asyncio

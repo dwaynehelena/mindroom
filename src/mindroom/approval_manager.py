@@ -22,6 +22,8 @@ from mindroom.approval_events import (
     parse_approval_datetime,
     terminal_edit_matches_card_sender,
 )
+from mindroom.arip_control import ApprovalControlStore
+from mindroom.flight_recorder import record_flight_event
 from mindroom.logging_config import get_logger
 from mindroom.tool_system.tool_calls import sanitize_failure_text, sanitize_failure_value
 
@@ -239,6 +241,10 @@ class _ApprovalManager:
         transport_sender: TransportSenderProvider | None = None,
     ) -> None:
         self._runtime_storage_root = runtime_paths.storage_root
+        self._runtime_paths = runtime_paths
+        self._arip_control = ApprovalControlStore(runtime_paths.storage_root / "arip_approval_control.db")
+        self._arip_open_lock = asyncio.Lock()
+        self._arip_open = False
         self._send_event = sender
         self._edit_event = editor
         self._event_cache = event_cache
@@ -323,7 +329,43 @@ class _ApprovalManager:
             return self._new_decision(status="expired", reason=_DEFAULT_SEND_FAILURE_REASON, resolved_by=None)
 
         try:
-            return await self._await_waiter(waiter, expires_at=expires_at)
+            try:
+                await self._open_arip_control()
+                await self._arip_control.request(
+                    approval_id=approval_id,
+                    tool_call_event_id=f"tool:{approval_id}",
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    eligible_actors=(approver_user_id,),
+                    quorum=1,
+                    expires_at=expires_at,
+                )
+                await self._record_approval_flight(
+                    approval_id,
+                    phase="requested",
+                    tool_name=tool_name,
+                    actor_id=approver_user_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to bind approval to exact executable payload",
+                    approval_id=approval_id,
+                    exc_info=True,
+                )
+                failure = self._new_decision(
+                    status="denied",
+                    reason="Tool approval could not be bound to its exact executable payload.",
+                    resolved_by=None,
+                )
+                await self._settle_waiter_with_terminal_edit(waiter, failure)
+                return failure
+            decision = await self._await_waiter(waiter, expires_at=expires_at)
+            return await self._apply_arip_decision(
+                approval_id=approval_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                decision=decision,
+            )
         except asyncio.CancelledError:
             await self._settle_bound_waiter_as_cancelled(waiter)
             raise
@@ -866,6 +908,88 @@ class _ApprovalManager:
                     self._resolved_card_event_ids.add(claimed_waiter.card_event_id)
         await self._drain_active_approval_sends()
         await self._drain_post_cancel_cleanup_tasks()
+        if self._arip_open:
+            await self._arip_control.close()
+            self._arip_open = False
+
+    async def _open_arip_control(self) -> None:
+        if self._arip_open:
+            return
+        async with self._arip_open_lock:
+            if not self._arip_open:
+                await self._arip_control.open()
+                self._arip_open = True
+
+    async def _apply_arip_decision(
+        self,
+        *,
+        approval_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        decision: ApprovalDecision,
+    ) -> ApprovalDecision:
+        """Persist the human decision and consume only an exact approved payload."""
+        if decision.status == "expired" or decision.resolved_by is None:
+            return decision
+        try:
+            await self._arip_control.decide(
+                approval_id=approval_id,
+                actor_id=decision.resolved_by,
+                decision=decision.status,
+                decided_at=decision.resolved_at,
+            )
+            await self._record_approval_flight(
+                approval_id,
+                phase="decided",
+                tool_name=tool_name,
+                actor_id=decision.resolved_by,
+                decision=decision.status,
+            )
+            if decision.status == "approved":
+                await self._arip_control.consume(
+                    approval_id=approval_id,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    observed_at=decision.resolved_at,
+                )
+                await self._record_approval_flight(
+                    approval_id,
+                    phase="consumed",
+                    tool_name=tool_name,
+                    actor_id=decision.resolved_by,
+                    decision=decision.status,
+                )
+        except Exception:
+            logger.warning("Exact-payload approval authorization failed closed", approval_id=approval_id, exc_info=True)
+            return self._new_decision(
+                status="denied",
+                reason="Exact-payload approval authorization failed.",
+                resolved_by=decision.resolved_by,
+            )
+        return decision
+
+    async def _record_approval_flight(
+        self,
+        approval_id: str,
+        *,
+        phase: str,
+        tool_name: str,
+        actor_id: str,
+        decision: str | None = None,
+    ) -> None:
+        """Record approval lifecycle metadata without executable arguments or card content."""
+        await record_flight_event(
+            self._runtime_paths,
+            run_id=approval_id,
+            kind="approval",
+            payload={
+                "actor_id": actor_id,
+                "decision": decision,
+                "phase": phase,
+                "tool_name": tool_name,
+            },
+            side_effect=True,
+        )
 
     async def _drain_active_approval_sends(self) -> None:
         while True:

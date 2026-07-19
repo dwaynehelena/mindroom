@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import threading
 import time
 from dataclasses import replace
@@ -898,6 +899,14 @@ async def test_tool_hook_bridge_does_not_record_success_rows_by_default(tmp_path
 
     assert result == {"echo": "notes.txt"}
     assert not (runtime_context.runtime_paths.storage_root / "tracking" / "tool_calls.jsonl").exists()
+    flight_path = runtime_context.runtime_paths.storage_root / "tracking" / "flight_recorder.db"
+    with sqlite3.connect(flight_path) as connection:
+        flight = connection.execute(
+            "SELECT run_id,kind,side_effect,payload_json FROM flight_record",
+        ).fetchone()
+    assert flight is not None
+    assert flight[:3] == ("corr-runtime", "tool_call", 1)
+    assert json.loads(flight[3])["tool_name"] == "read_file"
 
 
 @pytest.mark.asyncio

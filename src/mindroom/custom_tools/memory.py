@@ -21,6 +21,7 @@ from mindroom.memory import (
     search_agent_memories,
     update_agent_memory,
 )
+from mindroom.tool_system.runtime_context import get_tool_runtime_context
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -31,6 +32,16 @@ if TYPE_CHECKING:
     from mindroom.tool_system.worker_routing import ToolExecutionIdentity
 
 logger = get_logger(__name__)
+
+
+def _current_correlation_id() -> str | None:
+    runtime_context = get_tool_runtime_context()
+    return runtime_context.correlation_id if runtime_context is not None else None
+
+
+def _correlation_kwargs() -> dict[str, str]:
+    correlation_id = _current_correlation_id()
+    return {"correlation_id": correlation_id} if correlation_id else {}
 
 
 def _memory_result_lines(results: list[MemoryResult]) -> list[str]:
@@ -138,6 +149,7 @@ class MemoryTools(Toolkit):
                 self._runtime_paths,
                 metadata={"source": "explicit_tool"},
                 execution_identity=self._execution_identity,
+                **_correlation_kwargs(),
             )
         except Exception as e:
             detail = _memory_tool_failure(e, action="add", agent=self._agent_name)
@@ -260,6 +272,7 @@ class MemoryTools(Toolkit):
                 self._config,
                 self._runtime_paths,
                 execution_identity=self._execution_identity,
+                **_correlation_kwargs(),
             )
         except Exception as e:
             detail = _memory_tool_failure(e, action="update", agent=self._agent_name, memory_id=memory_id)
@@ -288,6 +301,7 @@ class MemoryTools(Toolkit):
                 self._config,
                 self._runtime_paths,
                 execution_identity=self._execution_identity,
+                **_correlation_kwargs(),
             )
         except Exception as e:
             detail = _memory_tool_failure(e, action="delete", agent=self._agent_name, memory_id=memory_id)

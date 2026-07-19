@@ -15,7 +15,12 @@ from agno.agent import Agent
 from mindroom import model_loading
 from mindroom.agent_storage import create_session_storage, get_agent_session
 from mindroom.logging_config import get_logger
-from mindroom.memory.functions import append_agent_daily_memory, list_all_agent_memories
+from mindroom.memory.functions import (
+    _record_completed_memory_write,
+    _record_memory_write,
+    append_agent_daily_memory,
+    list_all_agent_memories,
+)
 from mindroom.runtime_resolution import resolve_agent_execution
 from mindroom.tool_system.worker_routing import (
     SerializedToolExecutionIdentity,
@@ -780,7 +785,19 @@ class MemoryAutoFlushWorker:
         flush_marker = f"auto_flush:{session_id}:{session_updated}"
         memory_content = f"[{flush_marker}] {memory_summary}"
 
-        append_agent_daily_memory(
+        flight_facts = {
+            "operation": "auto_flush",
+            "backend": "agent file",
+            "scope": agent_name,
+            "session_id": session_id,
+        }
+        await _record_memory_write(
+            self.runtime_paths,
+            status="requested",
+            side_effect=False,
+            **flight_facts,
+        )
+        memory_result = append_agent_daily_memory(
             memory_content,
             agent_name=agent_name,
             storage_path=effective_storage_path,
@@ -788,5 +805,10 @@ class MemoryAutoFlushWorker:
             runtime_paths=self.runtime_paths,
             execution_identity=execution_identity,
             preserve_resolved_storage_path=False,
+        )
+        await _record_completed_memory_write(
+            self.runtime_paths,
+            **flight_facts,
+            memory_id=str(memory_result.get("id")) if memory_result.get("id") is not None else None,
         )
         return True

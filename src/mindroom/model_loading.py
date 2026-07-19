@@ -368,6 +368,7 @@ def get_model_instance(
         debug_config=config.debug,
         default_log_dir=runtime_paths.storage_root / "logs" / "llm_requests",
         configured_provider=provider,
+        runtime_paths=runtime_paths,
     )
     install_claude_prompt_cache_hook(model)
     install_claude_stream_retry_hook(model)

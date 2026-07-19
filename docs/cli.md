@@ -501,10 +501,12 @@ Check your environment for common issues before running `mindroom run`.
 Runs a series of checks in one pass:
 
 - **Config file** exists and is valid YAML with correct Pydantic schema
-- **Providers** — validates API keys for each configured provider (Anthropic, OpenAI, Ollama, Vertex AI Claude, etc.)
+- **Providers** — validates API keys with read-only model-list requests; Vertex AI Claude checks configuration and credential loading without sending a message
 - **Memory config** — checks memory LLM and embedder reachability (Ollama, OpenAI embeddings, sentence-transformers)
 - **Matrix homeserver** — verifies the homeserver is reachable via `/_matrix/client/versions`
-- **Storage** — confirms the storage directory is writable
+- **Storage** — inspects storage-directory permissions without creating or deleting a probe file
+
+Doctor does not sync credentials, register or pair accounts, send model messages, or mutate containers. Diagnostic output is centrally redacted before rendering.
 
 <!-- CODE:START -->
 <!-- from mindroom.cli.main import app -->

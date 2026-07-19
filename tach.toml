@@ -24,6 +24,24 @@ exclude = ["**/*__pycache__", "**/*egg-info", "**/docs", "**/tests", "**/venv"]
 source_roots = ["src"]
 
 [[modules]]
+path = "mindroom.arip"
+depends_on = ["mindroom.redaction"]
+# Fixture-only leaf: no runtime module may consume ARIP until a separately reviewed integration.
+visibility = []
+
+[[modules]]
+path = "mindroom.runtime_bridge"
+depends_on = [
+  "mindroom.delivery_gateway",
+  "mindroom.matrix.client_delivery",
+  "mindroom.message_target",
+  "mindroom.redaction",
+  "mindroom.turn_origin",
+]
+# Reviewed production composition is owned by the bot lifecycle.
+visibility = ["mindroom.bot"]
+
+[[modules]]
 path = "mindroom.chunking"
 depends_on = []
 
@@ -436,6 +454,7 @@ path = "mindroom.custom_tools.memory"
 depends_on = [
     "mindroom.embedding_errors",
     "mindroom.memory",
+    "mindroom.tool_system.runtime_context",
 ]
 
 [[modules]]
@@ -491,6 +510,10 @@ depends_on = [
     "mindroom.constants",
     "mindroom.dynamic_workflows",
 ]
+
+[[modules]]
+path = "mindroom.api.edge_fleet"
+depends_on = ["mindroom.edge_fleet"]
 
 [[modules]]
 path = "mindroom.api.external_triggers"
@@ -617,6 +640,7 @@ depends_on = [
     "mindroom.api.config_lifecycle",
     "mindroom.api.credentials",
     "mindroom.api.dynamic_workflows",
+    "mindroom.api.edge_fleet",
     "mindroom.api.external_triggers",
     "mindroom.api.frontend",
     "mindroom.api.homeassistant_integration",
@@ -632,6 +656,7 @@ depends_on = [
     "mindroom.api.workers",
     "mindroom.constants",
     "mindroom.credentials_sync",
+    "mindroom.edge_fleet",
     "mindroom.embedder_health",
     "mindroom.file_watcher",
     "mindroom.knowledge",
@@ -1952,6 +1977,7 @@ visibility = [
     "mindroom.matrix.client",
     "mindroom.matrix.decrypt_failure",
     "mindroom.matrix.stale_stream_cleanup",
+    "mindroom.runtime_bridge",
     "mindroom.scheduling",
     "mindroom.streaming",
     "mindroom.thread_summary",
@@ -2397,6 +2423,7 @@ depends_on = [
     "mindroom.post_response_effects",
     "mindroom.response_payload_preparation",
     "mindroom.response_runner",
+    "mindroom.runtime_bridge",
     "mindroom.scheduling",
     "mindroom.sync_restart_retry",
     "mindroom.teams",

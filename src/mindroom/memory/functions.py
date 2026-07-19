@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from mindroom.flight_recorder import record_flight_event
 from mindroom.logging_config import get_logger
 from mindroom.timing import timed
 
@@ -28,6 +29,49 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _memory_run_id(*, correlation_id: str | None, session_id: str | None) -> str:
+    if correlation_id:
+        return correlation_id
+    return f"memory:{session_id}" if session_id else "memory:unscoped"
+
+
+async def _record_memory_write(
+    runtime_paths: RuntimePaths,
+    *,
+    operation: str,
+    backend: str,
+    scope: str | list[str],
+    memory_id: str | None = None,
+    session_id: str | None = None,
+    correlation_id: str | None = None,
+    status: str,
+    side_effect: bool,
+) -> None:
+    """Record one content-free memory mutation phase."""
+    await record_flight_event(
+        runtime_paths,
+        run_id=_memory_run_id(correlation_id=correlation_id, session_id=session_id),
+        kind="memory_write",
+        payload={
+            "backend": backend,
+            "memory_id": memory_id,
+            "operation": operation,
+            "scope": scope,
+            "session_id": session_id,
+            "status": status,
+        },
+        side_effect=side_effect,
+    )
+
+
+async def _record_completed_memory_write(runtime_paths: RuntimePaths, **facts: object) -> None:
+    """Record post-commit evidence without making a successful write look retryable."""
+    try:
+        await _record_memory_write(runtime_paths, status="completed", side_effect=True, **facts)  # type: ignore[arg-type]
+    except Exception:
+        logger.exception("Failed to append completed memory flight record", operation=facts.get("operation"))
+
+
 @dataclass(frozen=True)
 class MemoryPromptParts:
     """Stable and turn-local prompt fragments used by the AI layer."""
@@ -44,10 +88,19 @@ async def add_agent_memory(
     runtime_paths: RuntimePaths,
     metadata: dict | None = None,
     execution_identity: ToolExecutionIdentity | None = None,
+    correlation_id: str | None = None,
 ) -> None:
     """Add a memory for an agent."""
     if (backend := resolve_memory_backend(agent_name, config, runtime_paths)) is None:
         return
+    flight_facts = {
+        "operation": "add",
+        "backend": backend.context_label,
+        "scope": agent_name,
+        "session_id": execution_identity.session_id if execution_identity is not None else None,
+        "correlation_id": correlation_id,
+    }
+    await _record_memory_write(runtime_paths, status="requested", side_effect=False, **flight_facts)
     await backend.add(
         content,
         agent_name,
@@ -56,6 +109,7 @@ async def add_agent_memory(
         metadata=metadata,
         execution_identity=execution_identity,
     )
+    await _record_completed_memory_write(runtime_paths, **flight_facts)
 
 
 def append_agent_daily_memory(
@@ -154,10 +208,20 @@ async def update_agent_memory(
     config: Config,
     runtime_paths: RuntimePaths,
     execution_identity: ToolExecutionIdentity | None = None,
+    correlation_id: str | None = None,
 ) -> None:
     """Update a single memory by ID."""
     if (backend := resolve_memory_backend(caller_context, config, runtime_paths)) is None:
         return
+    flight_facts = {
+        "operation": "update",
+        "backend": backend.context_label,
+        "scope": caller_context,
+        "memory_id": memory_id,
+        "session_id": execution_identity.session_id if execution_identity is not None else None,
+        "correlation_id": correlation_id,
+    }
+    await _record_memory_write(runtime_paths, status="requested", side_effect=False, **flight_facts)
     await backend.update(
         memory_id,
         content,
@@ -166,6 +230,7 @@ async def update_agent_memory(
         config,
         execution_identity=execution_identity,
     )
+    await _record_completed_memory_write(runtime_paths, **flight_facts)
 
 
 async def delete_agent_memory(
@@ -175,10 +240,20 @@ async def delete_agent_memory(
     config: Config,
     runtime_paths: RuntimePaths,
     execution_identity: ToolExecutionIdentity | None = None,
+    correlation_id: str | None = None,
 ) -> None:
     """Delete a single memory by ID."""
     if (backend := resolve_memory_backend(caller_context, config, runtime_paths)) is None:
         return
+    flight_facts = {
+        "operation": "delete",
+        "backend": backend.context_label,
+        "scope": caller_context,
+        "memory_id": memory_id,
+        "session_id": execution_identity.session_id if execution_identity is not None else None,
+        "correlation_id": correlation_id,
+    }
+    await _record_memory_write(runtime_paths, status="requested", side_effect=False, **flight_facts)
     await backend.delete(
         memory_id,
         caller_context,
@@ -186,6 +261,7 @@ async def delete_agent_memory(
         config,
         execution_identity=execution_identity,
     )
+    await _record_completed_memory_write(runtime_paths, **flight_facts)
 
 
 @timed("system_prompt_assembly.memory_enhancement")
@@ -284,12 +360,21 @@ async def store_conversation_memory(
     thread_history: Sequence[ResolvedVisibleMessage] | None = None,
     user_id: str | None = None,
     execution_identity: ToolExecutionIdentity | None = None,
+    correlation_id: str | None = None,
 ) -> None:
     """Store conversation in memory for future recall."""
     if not prompt:
         return
     if (backend := resolve_memory_backend(agent_name, config, runtime_paths)) is None:
         return
+    flight_facts = {
+        "operation": "store_conversation",
+        "backend": backend.context_label,
+        "scope": agent_name,
+        "session_id": session_id,
+        "correlation_id": correlation_id,
+    }
+    await _record_memory_write(runtime_paths, status="requested", side_effect=False, **flight_facts)
     await backend.store_conversation(
         prompt,
         agent_name,
@@ -300,3 +385,4 @@ async def store_conversation_memory(
         user_id=user_id,
         execution_identity=execution_identity,
     )
+    await _record_completed_memory_write(runtime_paths, **flight_facts)

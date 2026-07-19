@@ -26,6 +26,7 @@ from mindroom.constants import (
 )
 from mindroom.entity_resolution import current_internal_sender_ids, entity_identity_registry
 from mindroom.final_delivery import FinalDeliveryOutcome, StreamTransportOutcome
+from mindroom.flight_recorder import record_flight_event
 from mindroom.history.interrupted_replay import persist_interrupted_replay_snapshot
 from mindroom.history.storage import has_pending_force_compaction_scope, read_scope_state
 from mindroom.history.turn_recorder import TurnRecorder
@@ -977,6 +978,51 @@ class ResponseRunner:
         """Resolve the correlation id for one request."""
         return request.correlation_id or request.reply_to_event_id or request.response_envelope.source_event_id
 
+    async def _record_inbound_message(self, request: ResponseRequest) -> None:
+        """Record the content-free source envelope before response execution."""
+        await record_flight_event(
+            self.deps.runtime_paths,
+            run_id=self._correlation_id_for_request(request),
+            kind="message",
+            payload={
+                "agent_id": self.deps.agent_name,
+                "direction": "inbound",
+                "room_id": request.room_id,
+                "source_event_id": request.response_envelope.source_event_id,
+                "thread_id": request.thread_id,
+            },
+            side_effect=False,
+        )
+
+    async def _record_outbound_message(
+        self,
+        request: ResponseRequest,
+        outcome: FinalDeliveryOutcome,
+    ) -> None:
+        """Record terminal content-free delivery facts without risking a duplicate send."""
+        try:
+            await record_flight_event(
+                self.deps.runtime_paths,
+                run_id=self._correlation_id_for_request(request),
+                kind="message",
+                payload={
+                    "agent_id": self.deps.agent_name,
+                    "delivery_kind": outcome.delivery_kind,
+                    "direction": "outbound",
+                    "event_id": outcome.event_id,
+                    "is_visible_response": outcome.is_visible_response,
+                    "status": outcome.terminal_status,
+                    "suppressed": outcome.suppressed,
+                },
+                side_effect=True,
+            )
+        except Exception:
+            self.deps.logger.exception(
+                "Failed to append delivered message flight record",
+                correlation_id=self._correlation_id_for_request(request),
+                event_id=outcome.event_id,
+            )
+
     def _response_identity(self, request: ResponseRequest, *, response_kind: str) -> ResponseIdentity:
         """Build the per-turn identity carried by delivery requests and response hooks."""
         return ResponseIdentity(
@@ -1263,6 +1309,7 @@ class ResponseRunner:
         ]
         | None = None,
     ) -> str | None:
+        await self._record_inbound_message(request)
         """Run generation and settle its terminal lifecycle exactly once."""
         run_message_id: str | None = None
         deferred_error: BaseException | None = None
@@ -1336,6 +1383,7 @@ class ResponseRunner:
             post_response_outcome=build_post_response_outcome(final_delivery_outcome),
             post_response_deps=post_response_deps,
         )
+        await self._record_outbound_message(request, final_outcome)
         self._notify_sync_restart_cancelled(request, final_outcome)
         if deferred_error is not None:
             if final_outcome.mark_handled and request.on_deferred_outcome_handled is not None:
@@ -2718,6 +2766,7 @@ class ResponseRunner:
                         memory_thread_history,
                         request.user_id,
                         execution_identity=execution_identity,
+                        correlation_id=self._correlation_id_for_request(request),
                     ),
                     name=f"memory_save_{self.deps.agent_name}_{session_id}",
                     owner=self.deps.runtime,

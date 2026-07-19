@@ -74,6 +74,7 @@ async def _send_prepared_room_message(
     message_type: str,
     cache_bypass: bool,
     operation: str,
+    transaction_id: str | None = None,
 ) -> object | None:
     """Send one prepared Matrix room message and normalize local delivery exceptions."""
     try:
@@ -92,7 +93,7 @@ async def _send_prepared_room_message(
                 room_id,
                 message_type,
                 content_sent,
-                uuid4(),
+                transaction_id or uuid4(),
             )
             return await client._send(
                 nio.RoomSendResponse,
@@ -108,6 +109,7 @@ async def _send_prepared_room_message(
             message_type=message_type,
             content=content_sent,
             ignore_unverified_devices=True,
+            tx_id=transaction_id,
         )
     except asyncio.CancelledError:
         raise
@@ -183,8 +185,13 @@ async def send_message_result(
     content: dict[str, Any],
     *,
     operation: str = "send_message",
+    transaction_id: str | None = None,
 ) -> DeliveredMatrixEvent | None:
-    """Send a message to a Matrix room and return the exact delivered payload."""
+    """Send a message to a Matrix room and return the exact delivered payload.
+
+    A caller-supplied transaction ID is passed unchanged to Matrix so retrying an
+    uncertain send is server-idempotent. Callers must keep it stable per payload.
+    """
     if not _can_send_to_encrypted_room(client, room_id, operation=operation):
         return None
 
@@ -240,6 +247,7 @@ async def send_message_result(
         message_type=message_type,
         cache_bypass=cache_bypass,
         operation=operation,
+        transaction_id=transaction_id,
     )
     if response is None:
         emit_timing_event(

@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import ipaddress
 import os
-import tempfile
-from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 import httpx
 import typer
-from agno.models.vertexai.claude import Claude as VertexAIClaude
 from anthropic import APIStatusError
 from google.auth.exceptions import DefaultCredentialsError, RefreshError
 
@@ -24,6 +21,7 @@ from mindroom.embeddings import create_sentence_transformers_embedder
 from mindroom.google_adc import load_google_application_credentials
 from mindroom.matrix.health import matrix_versions_url, response_has_matrix_versions
 from mindroom.model_defaults import OLLAMA_HOST_DEFAULT
+from mindroom.redaction import redact_sensitive_text
 from mindroom.runtime_env_policy import VERTEXAI_CLAUDE_ENV_BY_KEY
 from mindroom.startup_errors import PermanentStartupError
 
@@ -31,10 +29,16 @@ from .config import activate_cli_runtime, console, load_config_quiet
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from mindroom.config.models import ModelConfig
 
 from mindroom.config.main import CONFIG_LOAD_USER_ERROR_TYPES, Config, iter_config_validation_messages
+
+
+def _print(message: object = "") -> None:
+    """Render doctor output only after centralized credential redaction."""
+    console.print(redact_sensitive_text(str(message)))
 
 
 def doctor(config_path: Path | None = None, storage_path: Path | None = None) -> None:
@@ -43,7 +47,7 @@ def doctor(config_path: Path | None = None, storage_path: Path | None = None) ->
     Runs connectivity, configuration, and credential checks in a single pass
     so you can fix everything before running `mindroom run`.
     """
-    console.print("[bold]MindRoom Doctor[/bold]\n")
+    _print("[bold]MindRoom Doctor[/bold]\n")
 
     passed = 0
     failed = 0
@@ -51,17 +55,15 @@ def doctor(config_path: Path | None = None, storage_path: Path | None = None) ->
 
     runtime_paths = activate_cli_runtime(path=config_path, storage_path=storage_path)
     config_path = runtime_paths.config_path
-    console.print(f"[dim]Config directory: {runtime_paths.config_dir}[/dim]")
+    _print(f"[dim]Config directory: {runtime_paths.config_dir}[/dim]")
 
     # Resolve credentials the way `mindroom run` will: seed/update env-backed
-    # services (EMBEDDER_API_KEY, provider keys, ...) into the shared store so
-    # preflight probes validate the keys the runtime will actually use.
-    # Credential-store failures must not abort the remaining diagnostics, but
-    # they are counted because the general storage check may target another path.
+    # services into the shared store before running provider preflight checks.
+    # Store failures are warnings so the remaining diagnostics still run.
     try:
         sync_env_to_credentials(runtime_paths=runtime_paths)
     except (OSError, ValueError) as exc:
-        console.print(f"[yellow]![/yellow] Could not sync env credentials into the store ({exc})")
+        _print(f"[yellow]![/yellow] Could not sync env credentials into the store ({exc})")
         warnings += 1
 
     # 1. Config file exists
@@ -119,7 +121,7 @@ def doctor(config_path: Path | None = None, storage_path: Path | None = None) ->
     warnings += w
 
     # Summary
-    console.print(f"\n{passed} passed, {failed} failed, {warnings} warning{'s' if warnings != 1 else ''}")
+    _print(f"\n{passed} passed, {failed} failed, {warnings} warning{'s' if warnings != 1 else ''}")
 
     if failed > 0:
         raise typer.Exit(1)
@@ -135,23 +137,22 @@ def _check_e2ee_stores(runtime_paths: RuntimePaths) -> tuple[int, int, int]:
         (key, account) for key, account in state.accounts.items() if account.device_id and account.domain
     ]
     if not accounts_with_devices:
-        console.print("[green]✓[/green] Encryption stores: no persisted Matrix devices yet")
+        _print("[green]✓[/green] Encryption stores: no persisted Matrix devices yet")
         return 1, 0, 0
 
     missing = [
-        (key, account)
+        key
         for key, account in accounts_with_devices
         if not olm_store_exists(f"@{account.username}:{account.domain}", account.device_id or "", runtime_paths)
     ]
     if not missing:
         count = len(accounts_with_devices)
-        console.print(f"[green]✓[/green] Encryption stores: {count} device store{'s' if count != 1 else ''} present")
+        _print(f"[green]✓[/green] Encryption stores: {count} device store{'s' if count != 1 else ''} present")
         return 1, 0, 0
 
-    for key, account in missing:
-        console.print(
-            f"[yellow]⚠[/yellow] Encryption store missing for {key} "
-            f"(@{account.username}:{account.domain}, device {account.device_id}); "
+    for key in missing:
+        _print(
+            f"[yellow]⚠[/yellow] Encryption store missing for {key}; "
             "MindRoom will log in as a fresh device on next start and old encrypted messages stay unreadable",
         )
     return 0, 0, len(missing)
@@ -166,12 +167,12 @@ def _run_doctor_step[T](message: str, check: Callable[[], T]) -> T:
 def _check_config_exists(config_path: Path) -> tuple[int, int, int]:
     """Check config file exists. Returns (passed, failed, warnings)."""
     if config_path.is_file():
-        console.print(f"[green]✓[/green] Config file: {config_path}")
+        _print(f"[green]✓[/green] Config file: {config_path}")
         return 1, 0, 0
     if config_path.exists():
-        console.print(f"[red]✗[/red] Config path is not a file: {config_path}")
+        _print(f"[red]✗[/red] Config path is not a file: {config_path}")
         return 0, 1, 0
-    console.print(f"[red]✗[/red] Config file not found: {config_path}")
+    _print(f"[red]✗[/red] Config file not found: {config_path}")
     return 0, 1, 0
 
 
@@ -181,13 +182,13 @@ def _check_config_valid(runtime_paths: RuntimePaths) -> tuple[Config | None, int
         config = load_config_quiet(runtime_paths=runtime_paths)
     except CONFIG_LOAD_USER_ERROR_TYPES as exc:
         issues = "; ".join(f"{location}: {message}" for location, message in iter_config_validation_messages(exc))
-        console.print(f"[red]✗[/red] Config invalid: {issues}")
+        _print(f"[red]✗[/red] Config invalid: {issues}")
         return None, 0, 1, 0
     agents = len(config.agents)
     teams = len(config.teams)
     models = len(config.models)
     rooms = len(config.get_all_configured_rooms())
-    console.print(
+    _print(
         f"[green]✓[/green] Config valid"
         f" ({agents} agent{'s' if agents != 1 else ''},"
         f" {teams} team{'s' if teams != 1 else ''},"
@@ -352,7 +353,7 @@ def _validate_vertexai_claude_connection(
     runtime_paths: RuntimePaths,
 ) -> tuple[bool | None, str]:
     """Validate the configured Vertex AI Claude model with the runtime request path."""
-    extra_kwargs = dict(model_config.extra_kwargs or {})
+    extra_kwargs = model_config.extra_kwargs or {}
     project_env = VERTEXAI_CLAUDE_ENV_BY_KEY["project_id"]
     region_env = VERTEXAI_CLAUDE_ENV_BY_KEY["region"]
     project_id = extra_kwargs.get("project_id") or runtime_paths.env_value(project_env)
@@ -365,42 +366,15 @@ def _validate_vertexai_claude_connection(
     if missing:
         return None, f"missing {', '.join(missing)}"
 
-    client_params = dict(extra_kwargs.get("client_params") or {})
     google_application_credentials = runtime_env_path(runtime_paths, "GOOGLE_APPLICATION_CREDENTIALS")
-    if "credentials" not in client_params and google_application_credentials is not None:
+    if google_application_credentials is not None:
         try:
-            client_params["credentials"] = load_google_application_credentials(str(google_application_credentials))
+            load_google_application_credentials(str(google_application_credentials))
         except PermanentStartupError as exc:
             return False, str(exc)
-    if client_params:
-        extra_kwargs["client_params"] = client_params
 
-    extra_kwargs.setdefault("project_id", project_id)
-    extra_kwargs.setdefault("region", region)
-    extra_kwargs.setdefault("timeout", 10)
-
-    try:
-        model = VertexAIClaude(id=model_config.id, **extra_kwargs)
-        request_kwargs = model.get_request_params().copy()
-        request_kwargs["model"] = model_config.id
-        request_kwargs["messages"] = [{"role": "user", "content": "Reply with OK."}]
-        request_kwargs.setdefault("max_tokens", 1)
-        request_kwargs["timeout"] = request_kwargs.get("timeout", 10)
-        client = model.get_client()
-        client.messages.create(
-            **request_kwargs,
-        )
-    except (
-        APIStatusError,
-        DefaultCredentialsError,
-        RefreshError,
-        RuntimeError,
-        TypeError,
-        ValueError,
-        httpx.HTTPError,
-    ) as exc:
-        return _classify_vertexai_claude_error(exc)
-
+    # Loading configuration and ADC is read-only. Deliberately do not issue an
+    # Anthropic messages request: doctor must never create provider content.
     return True, ""
 
 
@@ -426,7 +400,7 @@ def _check_providers(config: Config, runtime_paths: RuntimePaths) -> tuple[int, 
     for provider in sorted(provider_models):
         n = len(provider_models[provider])
         parts.append(f"{provider} ({n} model{'s' if n != 1 else ''})")
-    console.print(f"  Providers: {', '.join(parts)}")
+    _print(f"  Providers: {', '.join(parts)}")
 
     passed = 0
     failed = 0
@@ -451,12 +425,12 @@ def _print_validation(
 ) -> tuple[int, int, int]:
     """Print a tri-state validation result. Returns (passed, failed, warnings)."""
     if valid is True:
-        console.print(f"[green]✓[/green] {pass_msg}")
+        _print(f"[green]✓[/green] {pass_msg}")
         return 1, 0, 0
     if valid is False:
-        console.print(f"[red]✗[/red] {fail_msg} ({detail})")
+        _print(f"[red]✗[/red] {fail_msg} ({detail})")
         return 0, 1, 0
-    console.print(f"[yellow]![/yellow] {warn_msg} ({detail})")
+    _print(f"[yellow]![/yellow] {warn_msg} ({detail})")
     return 0, 0, 1
 
 
@@ -510,7 +484,7 @@ def _check_single_provider(
 
     api_key = runtime_paths.env_value(env_key)
     if not api_key:
-        console.print(f"[yellow]![/yellow] {provider}: {env_key} not set")
+        _print(f"[yellow]![/yellow] {provider}: {env_key} not set")
         return 0, 0, 1
 
     base_url = _get_custom_base_url(config, provider)
@@ -533,12 +507,12 @@ def _check_memory_config(config: Config, runtime_paths: RuntimePaths) -> tuple[i
     )
     if "mem0" not in backends:
         if backends == {"none"}:
-            console.print("[green]✓[/green] Memory backend: disabled")
+            _print("[green]✓[/green] Memory backend: disabled")
         elif backends == {"file"}:
-            console.print("[green]✓[/green] Memory backend: file (markdown)")
+            _print("[green]✓[/green] Memory backend: file (markdown)")
         else:
             labels = "/".join("disabled" if backend == "none" else backend for backend in sorted(backends))
-            console.print(f"[green]✓[/green] Memory backend: mixed (per-agent {labels})")
+            _print(f"[green]✓[/green] Memory backend: mixed (per-agent {labels})")
         # Semantic knowledge bases and file-backend semantic memory search
         # need the shared embedder even without mem0.
         if semantic_embedder_configured(config):
@@ -548,7 +522,7 @@ def _check_memory_config(config: Config, runtime_paths: RuntimePaths) -> tuple[i
 
     if len(backends) > 1:
         labels = "/".join("disabled" if backend == "none" else backend for backend in sorted(backends))
-        console.print(f"[green]✓[/green] Memory backend: mixed (per-agent {labels})")
+        _print(f"[green]✓[/green] Memory backend: mixed (per-agent {labels})")
 
     p1, f1, w1 = _check_memory_llm(config, runtime_paths=runtime_paths)
     p2, f2, w2 = _check_memory_embedder(config, runtime_paths=runtime_paths)
@@ -559,7 +533,7 @@ def _check_memory_llm(config: Config, runtime_paths: RuntimePaths) -> tuple[int,
     """Check memory LLM configuration. Returns (passed, failed, warnings)."""
     if config.memory.llm is None:
         ollama_host = _get_ollama_host(config, runtime_paths=runtime_paths)
-        console.print(
+        _print(
             "[yellow]![/yellow] Memory LLM not configured"
             f" (defaults to ollama at {ollama_host};"
             " see memory/config.py fallback)",
@@ -567,7 +541,7 @@ def _check_memory_llm(config: Config, runtime_paths: RuntimePaths) -> tuple[int,
         # Check if default Ollama is reachable
         valid, detail = _http_check(f"{ollama_host.rstrip('/')}/api/tags")
         if valid is not True:
-            console.print(
+            _print(
                 f"[red]✗[/red] Default Ollama for memory LLM unreachable ({ollama_host}: {detail})",
             )
             return 0, 1, 0
@@ -594,7 +568,7 @@ def _check_memory_llm(config: Config, runtime_paths: RuntimePaths) -> tuple[int,
     env_key = env_key_for_provider(llm_provider)
     api_key = runtime_paths.env_value(env_key) if env_key else None
     if env_key and not api_key:
-        console.print(
+        _print(
             f"[yellow]![/yellow] Memory LLM ({llm_provider}): {env_key} not set",
         )
         return 0, 0, 1
@@ -654,7 +628,7 @@ def _check_memory_embedder(config: Config, runtime_paths: RuntimePaths) -> tuple
     env_key = env_key_for_provider(emb.provider)
     api_key = runtime_paths.env_value(env_key) if env_key else None
     if env_key and not api_key:
-        console.print(
+        _print(
             f"[yellow]![/yellow] Memory embedder ({emb.provider}): {env_key} not set",
         )
         return 0, 0, 1
@@ -690,26 +664,25 @@ def _check_matrix_homeserver(runtime_paths: RuntimePaths) -> tuple[int, int, int
     try:
         response = httpx.get(url, timeout=5, verify=constants.runtime_matrix_ssl_verify(runtime_paths=runtime_paths))
     except httpx.TransportError as exc:
-        console.print(f"[red]✗[/red] Matrix homeserver unreachable: {homeserver} ({exc})")
+        _print(f"[red]✗[/red] Matrix homeserver unreachable: {homeserver} ({exc})")
         return 0, 1, 0
     if response_has_matrix_versions(response):
-        console.print(f"[green]✓[/green] Matrix homeserver: {homeserver}")
+        _print(f"[green]✓[/green] Matrix homeserver: {homeserver}")
         return 1, 0, 0
     detail = f"HTTP {response.status_code}" if not response.is_success else "returned invalid /versions payload"
-    console.print(f"[red]✗[/red] Matrix homeserver {detail}: {homeserver}")
+    _print(f"[red]✗[/red] Matrix homeserver {detail}: {homeserver}")
     return 0, 1, 0
 
 
 def _check_storage_writable(runtime_paths: RuntimePaths) -> tuple[int, int, int]:
-    """Check storage directory is writable. Returns (passed, failed, warnings)."""
+    """Inspect storage write permissions without creating or deleting anything."""
     storage = runtime_paths.storage_root
-    try:
-        storage.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=storage)
-        os.close(fd)
-        Path(tmp).unlink()
-    except OSError as exc:
-        console.print(f"[red]✗[/red] Storage not writable: {storage} ({exc})")
+    existing = storage
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    writable = existing.is_dir() and os.access(existing, os.W_OK | os.X_OK)
+    if not writable:
+        _print(f"[red]✗[/red] Storage not writable: {storage}")
         return 0, 1, 0
-    console.print(f"[green]✓[/green] Storage writable: {storage}/")
+    _print(f"[green]✓[/green] Storage writable: {storage}/")
     return 1, 0, 0

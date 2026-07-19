@@ -60,6 +60,7 @@ from mindroom.matrix_rtc.call_manager import CallManager, maybe_build_call_manag
 from mindroom.memory import store_conversation_memory
 from mindroom.message_target import MessageTarget  # noqa: TC001
 from mindroom.post_response_effects import PostResponseEffectsSupport
+from mindroom.runtime_bridge import RuntimeBridgeLifecycle
 from mindroom.runtime_shutdown import ENTITY_REMOVED_SHUTDOWN, GENERIC_SHUTDOWN, RuntimeShutdownIntent
 from mindroom.stop import StopManager
 from mindroom.teams import TeamMode, TeamOutcome, resolve_configured_team
@@ -537,6 +538,14 @@ class AgentBot:
                 turn_policy=self._turn_policy,
             ),
         )
+        self._runtime_bridge = RuntimeBridgeLifecycle(
+            agent_name=self.agent_name,
+            storage_path=self.storage_path,
+            gateway=self._delivery_gateway,
+            runtime=self._runtime_view,
+            runtime_paths=self.runtime_paths,
+            turn_store=self._turn_store,
+        )
         self._turn_controller = TurnController(
             TurnControllerDeps(
                 runtime=self._runtime_view,
@@ -557,6 +566,7 @@ class AgentBot:
                 edit_regenerator=self._edit_regenerator,
                 ingress=self._ingress_validator,
                 restart_retry=self._restart_retry_queue,
+                runtime_bridge=self._runtime_bridge,
             ),
         )
 
@@ -1201,6 +1211,7 @@ class AgentBot:
             await self._emit_room_member_joined_sync_state_hooks(response)
 
         if first_sync_response:
+            await self._runtime_bridge.initial_sync_ready()
             self._register_room_member_callback_after_initial_sync()
             await self._emit_agent_lifecycle_event(EVENT_BOT_READY)
             orchestrator = self.orchestrator
@@ -1427,6 +1438,7 @@ class AgentBot:
             # off the event loop so per-bot startup never stalls dispatch.
             await asyncio.to_thread(self._turn_store.warm)
             await asyncio.to_thread(interactive.init_persistence, self.runtime_paths.storage_root)
+            await self._runtime_bridge.start(self.config)
             client = self.client
             assert client is not None
 
@@ -1569,6 +1581,7 @@ class AgentBot:
             await call_manager.shutdown()
 
         await self.prepare_for_sync_shutdown(shutdown_intent=shutdown_intent)
+        await self._runtime_bridge.close()
 
         if self.agent_name == ROUTER_AGENT_NAME:
             cleared_queued_tasks = clear_deferred_overdue_tasks()
@@ -2228,6 +2241,7 @@ class TeamBot(AgentBot):
                     memory_thread_history,
                     request.user_id,
                     execution_identity=execution_identity,
+                    correlation_id=request.correlation_id or target.reply_to_event_id,
                 ),
                 name=f"memory_save_team_{session_id}",
                 owner=self._runtime_view,

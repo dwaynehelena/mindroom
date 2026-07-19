@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call
@@ -414,6 +416,21 @@ async def test_live_card_response_ignores_cached_terminal_edit_from_different_se
     assert result.consumed is True
     assert decision is not None
     assert decision.status == "approved"
+    with sqlite3.connect(runtime_paths.storage_root / "arip_approval_control.db") as connection:
+        row = connection.execute(
+            "SELECT payload_digest,consumed_at FROM approval_request",
+        ).fetchone()
+    assert row is not None
+    assert len(row[0]) == 64
+    assert row[1] is not None
+    with sqlite3.connect(runtime_paths.storage_root / "tracking" / "flight_recorder.db") as connection:
+        flight_rows = connection.execute(
+            "SELECT kind,payload_json,side_effect FROM flight_record ORDER BY sequence",
+        ).fetchall()
+    assert [row[0] for row in flight_rows] == ["approval", "approval", "approval"]
+    assert [json.loads(row[1])["phase"] for row in flight_rows] == ["requested", "decided", "consumed"]
+    assert all(row[2] == 1 for row in flight_rows)
+    assert "notes.txt" not in repr(flight_rows)
     editor.assert_awaited_once()
 
 

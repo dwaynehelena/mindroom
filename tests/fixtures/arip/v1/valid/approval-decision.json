@@ -1,0 +1,15 @@
+{
+  "schema_version": "arip/1",
+  "event_id": "evt-decision-001",
+  "occurred_at": "2026-07-15T12:00:02Z",
+  "source": "synthetic-fixture",
+  "payload": {
+    "event_type": "approval.decided",
+    "approval_id": "approval-001",
+    "redacted_preview_digest": "553ea14bdbe00760ae379ac921ede32b0507bc2443de8eb0a1c9329d817cba23",
+    "actor_id": "@fixture-approver:example.test",
+    "decision": "approved",
+    "decided_at": "2026-07-15T12:00:02Z",
+    "reason": "Synthetic fixture only"
+  }
+}

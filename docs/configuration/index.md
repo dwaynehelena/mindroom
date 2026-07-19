@@ -138,6 +138,55 @@ tool_approval:
       timeout_days: 3
 ```
 
+## Governed Privacy Routing
+
+The optional top-level `privacy_routing` block declares policy-attested model and tool routes. It is disabled by default. Enabling it requires at least one route, and startup composition must bind every route's `executor` name to exactly one live executor of the declared kind. Missing, ambiguous, or wrong-kind bindings fail closed before dispatch.
+
+```yaml
+privacy_routing:
+  enabled: true
+  routes:
+    private_model:
+      kind: model
+      executor: local_private_model
+      location: local
+      residency: AU
+      max_sensitivity: restricted
+      capabilities: [reasoning]
+      cost_microunits: 10
+      isolated: true
+      privileges: []
+      timeout_seconds: 120
+```
+
+Restricted requests are always local-only. Route selection also enforces residency, budget, capabilities, isolation, privileges, health, and sensitivity. A selected executor failure or timeout never falls back to another route.
+
+## Personal Ops Autopilot
+
+The optional top-level `personal_ops` service is disabled by default. Enabling it requires a scoped GitHub repository and canonical Matrix room. Runtime composition must also supply the read-tool invoker and both MindRoom and OpenClaw write executors; missing dependencies fail startup without replacing an already-running generation.
+
+```yaml
+personal_ops:
+  enabled: true
+  timezone: Australia/Sydney
+  hour: 8
+  minute: 0
+  github_repository: owner/repository
+  item_limit: 20
+  matrix_origin: http://127.0.0.1:8008
+  room_id: "!personal-ops:localhost"
+  delivery_timeout_seconds: 10
+  executor_agent: assistant
+  mindroom_write_tools: [gmail.send_email, google_calendar.create_event]
+  openclaw_gateway_url: ws://127.0.0.1:18789
+  openclaw_token_env: OPENCLAW_GATEWAY_TOKEN
+  openclaw_write_methods: [send]
+  execution_timeout_seconds: 30
+```
+
+The service reads the canonical agent access token from Matrix state, owns its action, approval, and delivery ledgers, and replaces its daily schedule atomically on reload. Matrix delivery remains loopback-only, and consequential writes still require an exact-payload ARIP grant.
+The executor agent must expose every named MindRoom function. OpenClaw credentials are read from the named environment variable and the gateway request is framed over worker stdin, so private action content and tokens are not placed in process arguments. Both write allowlists are exact and fail closed.
+
 ## Environment Variables
 
 ### Core
@@ -148,6 +197,7 @@ tool_approval:
 | `MINDROOM_STORAGE_PATH` | Data storage directory | `mindroom_data/` next to config |
 | `MINDROOM_CONFIG_TEMPLATE` | Path to a config template. When set and `config.yaml` does not exist, MindRoom copies this template to the config path. Used in Docker containers to seed config from bundled templates | Same as config path |
 | `MINDROOM_CREDENTIALS_ENCRYPTION_KEY` | Optional base64-encoded 32-byte key for encrypted-at-rest credential files | unset |
+| `MINDROOM_EDGE_ENROLLMENT_KEY` | URL-safe Base64 enrollment authority key (at least 32 decoded bytes); enables the Edge Fleet node and authenticated coordinator APIs | unset (fleet disabled) |
 | `LOG_LEVEL` | Logging level for `mindroom run` (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
 | `MINDROOM_LOGGER_LEVELS` | Optional comma- or semicolon-separated logger level overrides, for example `mindroom:DEBUG,httpx:WARNING,httpcore:WARNING,anthropic:INFO,nio:WARNING` | unset |
 

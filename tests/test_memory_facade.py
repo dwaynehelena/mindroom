@@ -13,9 +13,10 @@ from openai import AuthenticationError
 
 from mindroom.config.agent import AgentConfig
 from mindroom.config.main import Config
-from mindroom.constants import resolve_runtime_paths
+from mindroom.constants import resolve_runtime_paths, tracking_dir
 from mindroom.embedder_health import capture_embedder_health_recorder, get_embedder_failure
 from mindroom.embedding_errors import EmbedderRequestError
+from mindroom.flight_recorder import FlightRecorder
 from mindroom.memory import MemoryPromptParts
 from mindroom.memory import add_agent_memory as public_add_agent_memory
 from mindroom.memory import build_memory_prompt_parts as public_build_memory_prompt_parts
@@ -738,6 +739,7 @@ class TestMemoryFacade:
                 storage_path,
                 "session123",
                 config,
+                correlation_id="corr-memory",
             )
 
         assert mock_memory.add.call_count == 1
@@ -745,6 +747,25 @@ class TestMemoryFacade:
         assert agent_call[0][0] == [{"role": "user", "content": "What is 2+2?"}]
         assert agent_call[1]["user_id"] == "agent_calculator"
         assert agent_call[1]["metadata"]["type"] == "conversation"
+        recorder = FlightRecorder(tracking_dir(runtime_paths_for(config)) / "flight_recorder.db")
+        await recorder.open()
+        try:
+            records = await recorder.records("corr-memory")
+        finally:
+            await recorder.close()
+        assert [record.payload["status"] for record in records] == ["requested", "completed"]
+        assert all(record.kind == "memory_write" for record in records)
+        assert records[0].side_effect is False
+        assert records[1].side_effect is True
+        assert records[1].payload == {
+            "backend": "agent",
+            "memory_id": None,
+            "operation": "store_conversation",
+            "scope": "calculator",
+            "session_id": "session123",
+            "status": "completed",
+        }
+        assert "What is 2+2?" not in str(records)
 
     @pytest.mark.asyncio
     async def test_store_conversation_memory_no_prompt(

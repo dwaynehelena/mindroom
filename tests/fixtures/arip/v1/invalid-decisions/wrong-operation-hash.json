@@ -1,0 +1,14 @@
+{
+  "schema_version": "arip/1",
+  "event_id": "evt-invalid-decision-hash",
+  "occurred_at": "2026-07-15T12:00:02Z",
+  "source": "synthetic-fixture",
+  "payload": {
+    "event_type": "approval.decided",
+    "approval_id": "approval-001",
+    "redacted_preview_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "actor_id": "@fixture-approver:example.test",
+    "decision": "approved",
+    "decided_at": "2026-07-15T12:00:02Z"
+  }
+}

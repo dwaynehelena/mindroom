@@ -33,6 +33,7 @@ from mindroom.config.approval import ToolApprovalConfig
 from mindroom.config.auth import AuthorizationConfig
 from mindroom.config.calls import CallsConfig
 from mindroom.config.entity_view import ResolvedEntityView
+from mindroom.config.external_runtime import ExternalRuntimesConfig
 from mindroom.config.external_trigger_policy import ExternalTriggerPolicyConfig
 from mindroom.config.knowledge import KnowledgeBaseConfig
 from mindroom.config.matrix import (
@@ -51,7 +52,9 @@ from mindroom.config.models import (
     RouterConfig,
     ToolConfigEntry,
 )
+from mindroom.config.personal_ops import PersonalOpsConfig
 from mindroom.config.plugin import PluginEntryConfig  # noqa: TC001
+from mindroom.config.privacy import PrivacyRoutingConfig
 from mindroom.config.runtime_overlays import (
     apply_runtime_approved_egress_overlay,
     strip_runtime_approved_egress_overlay_from_dump,
@@ -146,7 +149,13 @@ _OPTIONAL_DICT_SECTION_NAMES = (
     "matrix_room_access",
     "matrix_space",
 )
-_OPTIONAL_MODEL_SECTION_NAMES = ("debug", "external_trigger_policy", "tool_approval")
+_OPTIONAL_MODEL_SECTION_NAMES = (
+    "debug",
+    "external_trigger_policy",
+    "personal_ops",
+    "privacy_routing",
+    "tool_approval",
+)
 
 
 class ConfigRuntimeValidationError(ValueError):
@@ -394,6 +403,18 @@ class Config(BaseModel):
     external_trigger_policy: ExternalTriggerPolicyConfig = Field(
         default_factory=ExternalTriggerPolicyConfig,
         description="Global policy for tool-managed signed external triggers",
+    )
+    external_runtimes: ExternalRuntimesConfig = Field(
+        default_factory=ExternalRuntimesConfig,
+        description="Strict disabled-by-default OpenClaw/Hermes runtime integration",
+    )
+    privacy_routing: PrivacyRoutingConfig = Field(
+        default_factory=PrivacyRoutingConfig,
+        description="Disabled-by-default governed model and tool routing",
+    )
+    personal_ops: PersonalOpsConfig = Field(
+        default_factory=PersonalOpsConfig,
+        description="Disabled-by-default owned daily Personal Ops service",
     )
     models: dict[str, ModelConfig] = Field(default_factory=dict, description="Model configurations")
     tool_approval: ToolApprovalConfig = Field(

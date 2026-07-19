@@ -42,6 +42,13 @@ MindRoom's architecture consists of several key components working together.
 - [Matrix Integration](matrix.md) - How MindRoom connects to Matrix
 - [Agent Orchestration](orchestration.md) - How agents are managed
 - [Bot Runtime](bot-runtime.md) - The inbound turn pipeline and its module boundaries
+- [ARIP v1](arip-v1.md) - Isolated redacted interoperability fixture contract
+- [External Runtime Bridge](runtime-bridge.md) - Isolated, conditional subprocess foundation (not production Matrix wiring)
+- [Cross-Device Edge Fleet](edge-fleet.md) - Authenticated enrollment, coordinator queue, node leases, and result attestations
+- [Skill Foundry and Trust Registry](skill-foundry.md) - Scanning, offline sandbox evidence, signed promotion, and rollback
+- [Governed Privacy Routing](privacy-routing.md) - Sensitivity-aware model/tool selection and fail-closed execution
+- [Provenance Memory Fabric](provenance-memory.md) - Consent-bound portable memory and cross-runtime deletion
+- [Governed Learning Loop](governed-learning.md) - Trace-gated candidates, live review, canaries, and active promotion
 
 ## Key Internal Modules
 

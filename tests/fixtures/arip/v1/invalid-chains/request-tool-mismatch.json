@@ -1,0 +1,1 @@
+{"event":"approval-request","patch":{"payload":{"tool_call_event_id":"evt-tool-other"}},"error":"different tool_call_event_id"}
