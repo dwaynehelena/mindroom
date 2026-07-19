@@ -57,6 +57,7 @@ services:
     restart: unless-stopped
     volumes:
       - ${HOME}/.mindroom/telegram-bridge:/data
+      - tgbridge_db:/db
     networks:
       - default
     depends_on:
@@ -64,6 +65,7 @@ services:
         condition: service_healthy
 
 volumes:
+  tgbridge_db:
   postgres_data:
   redis_data:
   synapse_media:
