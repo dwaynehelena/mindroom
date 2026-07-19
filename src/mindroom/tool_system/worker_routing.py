@@ -38,9 +38,12 @@ _LOCAL_ONLY_SHARED_INTEGRATION_TOOL_NAMES = frozenset(
     {
         "approved_egress",
         "attachments",
+        "callback_manager",
+        "desktop",
         "external_trigger_manager",
         "gmail",
         "google_calendar",
+        "google_docs",
         "google_drive",
         "google_sheets",
         "homeassistant",

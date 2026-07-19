@@ -418,7 +418,7 @@ class TestAgentBot(AgentBotTestBase):
         room = SimpleNamespace(room_id="!test:localhost", canonical_alias=None)
         _store, pending, task, editor = await _start_live_approval(
             runtime_paths,
-            arguments={"content": "x" * 10_000},
+            arguments={"content": "x" * 3_000_000},
         )
 
         try:
@@ -433,10 +433,10 @@ class TestAgentBot(AgentBotTestBase):
             decision = await task
 
             assert decision.status == "denied"
-            assert "displayed arguments are truncated" in (decision.reason or "")
+            assert "too large to show in full" in (decision.reason or "")
             replacement = editor.await_args.args[2]
             assert replacement["status"] == "denied"
-            assert "displayed arguments are truncated" in replacement["resolution_reason"]
+            assert "too large to show in full" in replacement["resolution_reason"]
             orchestrator.send_approval_notice.assert_awaited_once_with(
                 room_id="!test:localhost",
                 approval_event_id=pending.card_event_id,
@@ -469,7 +469,7 @@ class TestAgentBot(AgentBotTestBase):
         room = SimpleNamespace(room_id="!test:localhost", canonical_alias=None)
         _store, pending, task, editor = await _start_live_approval(
             runtime_paths,
-            arguments={"content": "x" * 10_000},
+            arguments={"content": "x" * 3_000_000},
         )
 
         try:
@@ -489,7 +489,7 @@ class TestAgentBot(AgentBotTestBase):
             assert handled is True
             assert decision.status == "denied"
             replacement = editor.await_args.args[2]
-            assert "displayed arguments are truncated" in replacement["resolution_reason"]
+            assert "too large to show in full" in replacement["resolution_reason"]
             orchestrator.send_approval_notice.assert_awaited_once_with(
                 room_id="!test:localhost",
                 approval_event_id=pending.card_event_id,
@@ -942,6 +942,18 @@ class TestAgentBot(AgentBotTestBase):
                         "body": "first bridged plain reply",
                         "msgtype": "m.text",
                         "m.relates_to": {"m.in_reply_to": {"event_id": "$thread-reply"}},
+                    },
+                )
+            if event_id == "$thread-reply":
+                return room_get_event_response(
+                    "$thread-reply",
+                    {
+                        "body": "thread reply",
+                        "msgtype": "m.text",
+                        "m.relates_to": {
+                            "event_id": "$thread-root",
+                            "rel_type": "m.thread",
+                        },
                     },
                 )
             msg = f"unexpected event lookup: {event_id}"

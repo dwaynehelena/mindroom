@@ -14,6 +14,8 @@ from uuid import uuid4
 
 import yaml
 
+from mindroom import yaml_io
+
 if TYPE_CHECKING:
     from collections.abc import Collection, Sequence
     from pathlib import Path
@@ -244,7 +246,7 @@ def _thread_index_entry_at(directory_fd: int, filename: str) -> tuple[int, dict[
     if text is None:
         return None
     try:
-        payload = yaml.safe_load(text)
+        payload = yaml_io.safe_load(text)
     except yaml.YAMLError:
         return None
     if not isinstance(payload, dict):
@@ -448,7 +450,7 @@ def _existing_payload_matches(room_fd: int, filename: str, payload: dict[str, ob
     if text is None:
         return False
     try:
-        existing = yaml.safe_load(text)
+        existing = yaml_io.safe_load(text)
     except yaml.YAMLError:
         return False
     if not isinstance(existing, dict):
@@ -478,7 +480,7 @@ def write_thread_payload(
         filename = f"{_safe_path_segment(thread_id)}.yaml"
         if _existing_payload_matches(room_fd, filename, payload):
             return False
-        text = yaml.safe_dump(
+        text = yaml_io.safe_dump(
             payload,
             default_flow_style=False,
             sort_keys=False,

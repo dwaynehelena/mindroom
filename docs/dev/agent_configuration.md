@@ -64,7 +64,7 @@ Each model entry supports these fields:
 - **host** - Optional host URL (e.g., for Ollama or OpenAI-compatible servers)
 - **api_key** - Optional API key (usually set via env vars instead)
 - **extra_kwargs** - Additional provider-specific parameters (e.g., `base_url`)
-- **context_window** - Context window size in tokens; when set, MindRoom budgets persisted replay and applies a final replay-fit step, which may reduce replay, fall back to summary-only replay, or disable persisted replay entirely for that run; on `vertexai_claude` models it additionally enables request-time fitting that trims replayed history when a request would exceed the window
+- **context_window** - Actual provider context window size in tokens; when set, MindRoom uses it as the default replay-planning window unless compaction config sets a smaller `replay_window_tokens`, and applies a final replay-fit step that may reduce or disable persisted replay for that run; on `vertexai_claude` models it additionally enables request-time fitting that trims replayed history when a request would exceed the window
 
 ### Supported Providers
 
@@ -184,9 +184,11 @@ agents:
 - **num_history_runs**: Number of prior Agno runs to include as history context (per-agent override)
 - **num_history_messages**: Max messages from history (mutually exclusive with `num_history_runs`)
 - **compress_tool_results**: Compress tool results in history to save context (per-agent override, inherits a default of `false`, and can invalidate Anthropic/Vertex Claude prompt caches when enabled)
-- **compaction**: Optional per-agent required-compaction overrides (`enabled`, `threshold_tokens`, `threshold_percent`, `reserve_tokens`, `model`); when the active runtime model has a known `context_window`, MindRoom always computes a replay plan for the current run and reduces or disables persisted replay when needed.
+- **compaction**: Optional per-agent required-compaction overrides (`enabled`, `threshold_tokens`, `threshold_percent`, `replay_window_tokens`, `reserve_tokens`, `model`); when the active runtime model has a known `context_window`, MindRoom always computes a replay plan for the current run and reduces or disables persisted replay when needed.
 Automatic destructive compaction is enabled by default through `defaults.compaction`, but it runs only when raw history exceeds the hard replay budget for the next reply.
 `threshold_tokens` and `threshold_percent` set a soft trigger budget for planning metadata and compaction notices; crossing that soft trigger while still within the hard budget leaves the stored session unchanged and relies on replay fitting.
+`replay_window_tokens` can cap persisted replay and required-compaction planning below the model's real context window without lowering the provider request limit.
+If the active model window is unknown, an explicit `replay_window_tokens` still supplies the replay-planning window.
 Set `enabled: false` in defaults or the agent override to disable automatic pre-reply compaction.
 Manual `compact_context` records a durable request that runs before the next reply in the same conversation scope.
 Manual `compact_context` remains available when a compaction model and context window are configured.
@@ -485,6 +487,7 @@ Below is a representative selection:
 - **todo** - Create persistent per-thread work plans with dependencies and templates
 - **gmail** - Gmail integration (requires Google OAuth)
 - **google_calendar** - Calendar management (requires Google OAuth)
+- **google_docs** - Google Docs creation, reading, and text editing (requires Google OAuth)
 - **google_drive** - Google Drive file search and reading (requires Google OAuth)
 - **google_sheets** - Spreadsheet operations (requires Google OAuth)
 - **homeassistant** - Home Assistant device control (requires OAuth or long-lived access token)
@@ -599,9 +602,18 @@ Some tools need additional setup:
 - **email** - Configure SMTP server details
 
 ### Tools requiring OAuth:
-- **gmail**, **google_calendar**, **google_drive**, **google_sheets** - Google OAuth (configure via dashboard)
+- **gmail**, **google_calendar**, **google_docs**, **google_drive**, **google_sheets** - Google OAuth
 - **homeassistant** - Home Assistant OAuth or long-lived access token
-- **spotify** - Spotify OAuth (configure via dashboard)
+- **spotify** - Manually supplied Spotify OAuth access token
+
+The structured `OAuthConnectionRequired` flow applies only when a tool's MindRoom catalog metadata names an `auth_provider`, not to every tool in the list above or every `SetupType.OAUTH` integration.
+When the current agent already has one of these MindRoom-managed provider tools, call an appropriate safe status, read, or list operation from that tool.
+For an OAuth MCP server, use its generated `*_connection_status` or `*_list_tools` operation.
+If the operation returns `oauth_connection_required: true` and provides a `connect_url`, present that exact scoped link directly and do not send the user to the dashboard.
+If `requires_host_browser` is true, explain that the loopback URL (`localhost`, `127.0.0.1`, or `::1`) must be opened in a browser on the computer where MindRoom is running.
+Have the target agent retry the operation after the user connects.
+Do not promise that a newly configured tool can be called in the same run, because the current provider-visible tool schema may not include it yet.
+Use the dashboard only as a manual alternative when the structured result does not provide a `connect_url`.
 
 ### Tools requiring software:
 - **docker** - Install Docker on your system

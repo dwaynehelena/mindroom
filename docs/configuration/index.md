@@ -120,6 +120,11 @@ Use `script: ./approval_scripts/review.py` to run `check(tool_name, arguments, a
 React to the approval card with `✅` to approve the tool call.
 Reply to the approval card with a message to deny the tool call and record that text as the denial reason.
 Only the original human requester can approve or deny their pending tool call.
+Approval cards show a redacted preview of the tool arguments in the `arguments` content field, and set `arguments_truncated: true` when that preview is shortened for display.
+When the preview is truncated, the complete redacted arguments are delivered with the card so clients can render them behind a "show full arguments" expander and the call stays approvable.
+They ride inline in a `full_arguments` content field when they fit the Matrix event, and otherwise as an uploaded JSON sidecar referenced by `full_arguments_url` plus `full_arguments_info` in plain rooms or `full_arguments_file` (standard Matrix encrypted-file schema) in encrypted rooms.
+When the complete redacted arguments cannot be delivered — over the 2MB completeness cap or because the sidecar upload failed — the card sets `approvable: false` and any approve action is converted into a denial, because a human must be able to review exactly what would run.
+Clients should disable or hide the approve action when `approvable` is `false`.
 Approval responses only resolve the live Matrix approval card in the same room; approval IDs are used only as a live client hint.
 If MindRoom restarts before a tool call is approved, the live tool call is cancelled.
 On startup, MindRoom attempts to mark recent unresolved approval cards sent by the current router as expired.
@@ -432,6 +437,7 @@ defaults:
   compaction:
     enabled: true
     threshold_percent: 0.8
+    replay_window_tokens: null     # Optional persisted-replay cap; does not change the model's real context window
     reserve_tokens: 16384
   max_tool_calls_from_history: null  # Limit tool call messages replayed from history (null = no limit)
   show_tool_calls: true            # Default: true (show tool details inline; hidden mode still allows generic worker warmup copy)
@@ -582,6 +588,7 @@ calls:
       voice: marin
     openai-cascaded:
       backend: cascaded
+      model: default                 # Optional: top-level model alias overriding room/agent models for call turns
       stt:
         provider: openai
         model: gpt-4o-transcribe
@@ -710,9 +717,9 @@ No plaintext-to-encrypted migration is performed automatically, so configure the
 Every completed model request emits a privacy-safe structured `LLM usage` log event with provider and model identifiers.
 When provider usage data is available, the event also includes provider-normalized context input tokens, uncached input tokens, and a cache-read ratio without prompt content.
 When provider usage data is unavailable, the event sets `usage_available` to false and omits token and prompt-cache counters.
-`debug.log_llm_requests` additionally enables pre-provider request assembly logging for troubleshooting.
+`debug.log_llm_requests` additionally enables best-effort provider-request logging for troubleshooting without changing model-call success or failure.
 When enabled, MindRoom writes JSONL request records under `debug.llm_request_log_dir` or `mindroom_data/logs/llm_requests` by default.
-Those records include prompts, messages, tool schemas, model parameters, correlation IDs, requester metadata, and source Matrix event metadata.
+Those records include prompts, messages, the final provider-prepared tool array after MindRoom wire transformations, model parameters, correlation IDs, requester metadata, and source Matrix event metadata.
 The same flag also records successful tool-call rows in `mindroom_data/tracking/tool_calls.jsonl` so tool activity can be correlated with LLM request logs.
 Tool failures are always recorded in `tool_calls.jsonl`, even when request logging is disabled.
 Tool-call rows include a `timing` object with result-ready, before-hook, approval, and tool-body durations when those phases are measured.

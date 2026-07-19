@@ -93,6 +93,7 @@ Matrix sync callback
 | `dispatch_replay_guard.py` | Replay-guard checks for dispatch sequencing |
 | `turn_store.py` | Unified durable turn access (wraps the handled-turn ledger) |
 | `handled_turns.py` | Disk-backed handled-turn ledger preventing duplicate responses |
+| `redacted_turn_cleanup.py` | Source-redaction tombstoning and serialized persisted replay cleanup |
 | `sync_restart_retry.py` | One-shot re-dispatch of responses cancelled by sync-restart recovery |
 | `response_runner.py` | Response lifecycle execution (locking, streaming vs non-streaming, cancellation, detached inbox responses, shutdown drains) |
 | `response_turn.py` | Shared blocking/streaming response-turn drivers behind the agent and team envelopes (attempt loop, dynamic-tool continuation, empty-run retry, interrupt recording) |
@@ -545,7 +546,7 @@ Common `just` recipes for development:
 just local-matrix-up              # Boot Synapse + Postgres dev stack
 just local-platform-compose-up    # Full SaaS sandbox
 
-# Testing (IMPORTANT: enter `nix-shell shell.nix` first on NixOS hosts)
+# Testing (IMPORTANT: enter the Node.js 24 `nix-shell shell.nix` first on NixOS hosts)
 # If `uv run pytest` fails with 'module mindroom has no attribute bot',
 # use the repo dev shell so `libstdc++.so.6` is available:
 nix-shell shell.nix
@@ -575,10 +576,10 @@ Matty is a Matrix CLI client that allows you to interact with MindRoom AI agents
 
 ### Prerequisites
 ```bash
-# Matty is installed as a project dependency
-# Activate the virtual environment
+# Matty is optional and is not installed by `uv sync --all-extras`
+# Activate an environment where Matty is installed
 source .venv/bin/activate
-# Now you can use matty directly
+# If Matty is unavailable, use the authenticated raw Matrix client API
 ```
 
 ### Configuration

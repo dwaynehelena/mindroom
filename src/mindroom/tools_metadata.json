@@ -1972,11 +1972,12 @@
         "pydantic",
         "pyyaml"
       ],
-      "description": "Build and manage MindRoom agents with expert knowledge of the system",
+      "description": "Inspect and control the full MindRoom configuration, including agents, plugins, and authorization",
       "display_name": "Config Manager",
       "docs_url": "https://github.com/mindroom-ai/mindroom",
       "function_names": [
         "get_info",
+        "manage_config",
         "manage_agent",
         "manage_team"
       ],
@@ -2673,7 +2674,7 @@
         {
           "authored_override": true,
           "default": null,
-          "description": "Optional allowlist of Docker command functions to expose. Leave empty to expose all Docker commands.",
+          "description": "Optional allowlist of Docker command functions to expose. Leave unset to expose all commands.",
           "label": "Exposed Docker Commands",
           "name": "include_tools",
           "options": null,
@@ -7395,6 +7396,30 @@
       "agent_override_fields": null,
       "auth_provider": null,
       "category": "productivity",
+      "config_fields": null,
+      "consumes_workspace_paths": false,
+      "default_execution_target": "primary",
+      "dependencies": [
+        "agno"
+      ],
+      "description": "Create a single-use script that wakes this agent when background work finishes",
+      "display_name": "Callback Manager",
+      "docs_url": "https://docs.mindroom.chat/agent-callbacks/",
+      "function_names": [
+        "mint_callback"
+      ],
+      "helper_text": null,
+      "icon": "Webhook",
+      "icon_color": "text-amber-500",
+      "name": "callback_manager",
+      "requires_room_context": true,
+      "setup_type": "none",
+      "status": "available"
+    },
+    {
+      "agent_override_fields": null,
+      "auth_provider": null,
+      "category": "productivity",
       "config_fields": [
         {
           "authored_override": true,
@@ -7634,6 +7659,77 @@
         {
           "authored_override": true,
           "default": null,
+          "description": "Dedicated Matrix account used by the local desktop bridge.",
+          "label": "Desktop Matrix User ID",
+          "name": "device_user_id",
+          "options": null,
+          "placeholder": null,
+          "required": true,
+          "type": "text",
+          "validation": null
+        },
+        {
+          "authored_override": true,
+          "default": null,
+          "description": "Exact device ID printed by 'mindroom desktop login'.",
+          "label": "Desktop Matrix Device ID",
+          "name": "device_id",
+          "options": null,
+          "placeholder": null,
+          "required": true,
+          "type": "text",
+          "validation": null
+        },
+        {
+          "authored_override": true,
+          "default": null,
+          "description": "Exact Ed25519 fingerprint printed by 'mindroom desktop login'.",
+          "label": "Desktop Device Fingerprint",
+          "name": "device_ed25519",
+          "options": null,
+          "placeholder": null,
+          "required": true,
+          "type": "text",
+          "validation": null
+        },
+        {
+          "authored_override": true,
+          "default": 30,
+          "description": "Short-lived command and response timeout, from 1 to 120 seconds.",
+          "label": "Command Timeout Seconds",
+          "name": "timeout_seconds",
+          "options": null,
+          "placeholder": null,
+          "required": false,
+          "type": "number",
+          "validation": null
+        }
+      ],
+      "consumes_workspace_paths": false,
+      "default_execution_target": "primary",
+      "dependencies": null,
+      "description": "Operate exact locally allowlisted applications through accessibility state over Matrix encryption",
+      "display_name": "Matrix Desktop",
+      "docs_url": "https://docs.mindroom.chat/tools/desktop/",
+      "function_names": [
+        "desktop"
+      ],
+      "helper_text": null,
+      "icon": "MonitorUp",
+      "icon_color": "text-cyan-500",
+      "name": "desktop",
+      "requires_room_context": true,
+      "setup_type": "special",
+      "status": "requires_config"
+    },
+    {
+      "agent_override_fields": null,
+      "auth_provider": null,
+      "category": "productivity",
+      "config_fields": [
+        {
+          "authored_override": true,
+          "default": null,
           "description": null,
           "label": "Db Path",
           "name": "db_path",
@@ -7854,6 +7950,73 @@
       "icon": "SiGooglecalendar",
       "icon_color": "text-blue-600",
       "name": "google_calendar",
+      "requires_room_context": false,
+      "setup_type": "oauth",
+      "status": "requires_config"
+    },
+    {
+      "agent_override_fields": null,
+      "auth_provider": "google_docs",
+      "category": "productivity",
+      "config_fields": [
+        {
+          "authored_override": true,
+          "default": true,
+          "description": "Allow creating Google Docs and adding initial text.",
+          "label": "Create Documents",
+          "name": "create_document",
+          "options": null,
+          "placeholder": null,
+          "required": false,
+          "type": "boolean",
+          "validation": null
+        },
+        {
+          "authored_override": true,
+          "default": true,
+          "description": "Allow reading complete tab-aware document structure and content.",
+          "label": "Read Documents",
+          "name": "read_document",
+          "options": null,
+          "placeholder": null,
+          "required": false,
+          "type": "boolean",
+          "validation": null
+        },
+        {
+          "authored_override": true,
+          "default": true,
+          "description": "Allow inserting and replacing text in Google Docs.",
+          "label": "Edit Documents",
+          "name": "edit_document",
+          "options": null,
+          "placeholder": null,
+          "required": false,
+          "type": "boolean",
+          "validation": null
+        }
+      ],
+      "consumes_workspace_paths": false,
+      "default_execution_target": "primary",
+      "dependencies": [
+        "google-api-python-client",
+        "google-auth",
+        "google-auth-httplib2",
+        "google-auth-oauthlib"
+      ],
+      "description": "Create, read, and edit documents through the connected user's Google Docs",
+      "display_name": "Google Docs",
+      "docs_url": "https://developers.google.com/workspace/docs/api/reference/rest",
+      "function_names": [
+        "google_docs_create_document",
+        "google_docs_get_document",
+        "google_docs_insert_text",
+        "google_docs_replace_text"
+      ],
+      "helper_text": null,
+      "icon": "SiGoogledocs",
+      "icon_color": "text-blue-600",
+      "name": "google_docs",
       "requires_room_context": false,
       "setup_type": "oauth",
       "status": "requires_config"
@@ -9629,7 +9792,7 @@
         {
           "authored_override": true,
           "default": null,
-          "description": "Optional directory for browser screenshots, PDFs, and downloads. Defaults to the active storage path's browser/ directory.",
+          "description": "Optional host target directory for browser screenshots, PDFs, and downloads. Defaults to the active storage path's browser/ directory. The desktop target instead uses its local storage path's desktop-browser/ directory.",
           "label": "Output Directory",
           "name": "output_dir",
           "options": null,
@@ -9648,6 +9811,75 @@
           "placeholder": null,
           "required": false,
           "type": "boolean",
+          "validation": null
+        },
+        {
+          "authored_override": true,
+          "default": "host",
+          "description": "Use host for MindRoom's managed Playwright profile or desktop for the Playwright extension installed in the user's existing local browser profile.",
+          "label": "Default Browser Target",
+          "name": "default_target",
+          "options": [
+            {
+              "label": "MindRoom host profile",
+              "value": "host"
+            },
+            {
+              "label": "Matrix desktop profile",
+              "value": "desktop"
+            }
+          ],
+          "placeholder": null,
+          "required": false,
+          "type": "select",
+          "validation": null
+        },
+        {
+          "authored_override": true,
+          "default": null,
+          "description": "Required for target=desktop; dedicated Matrix account used by the local desktop bridge.",
+          "label": "Desktop Matrix User ID",
+          "name": "device_user_id",
+          "options": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text",
+          "validation": null
+        },
+        {
+          "authored_override": true,
+          "default": null,
+          "description": "Required for target=desktop; exact device ID printed by 'mindroom desktop login'.",
+          "label": "Desktop Matrix Device ID",
+          "name": "device_id",
+          "options": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text",
+          "validation": null
+        },
+        {
+          "authored_override": true,
+          "default": null,
+          "description": "Required for target=desktop; exact Ed25519 fingerprint of the local bridge device.",
+          "label": "Desktop Device Fingerprint",
+          "name": "device_ed25519",
+          "options": null,
+          "placeholder": null,
+          "required": false,
+          "type": "text",
+          "validation": null
+        },
+        {
+          "authored_override": true,
+          "default": 90,
+          "description": "Matrix and local Playwright MCP timeout from 1 to 120 seconds.",
+          "label": "Desktop Browser Timeout Seconds",
+          "name": "timeout_seconds",
+          "options": null,
+          "placeholder": null,
+          "required": false,
+          "type": "number",
           "validation": null
         }
       ],

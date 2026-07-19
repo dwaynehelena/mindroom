@@ -19,14 +19,13 @@ from agno.models.message import Message
 from pydantic import BaseModel
 
 from mindroom.constants import MATRIX_SOURCE_EVENT_IDS_METADATA_KEY, MATRIX_SOURCE_EVENT_PROMPTS_METADATA_KEY
-from mindroom.flight_recorder import record_flight_event
 from mindroom.logging_config import get_logger
 from mindroom.model_usage import context_input_tokens_from_counts
 from mindroom.redaction import redact_sensitive_data
 from mindroom.tool_system.context_bound_streams import context_bound_async_stream
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Coroutine, Iterator, Sequence
+    from collections.abc import AsyncIterator, Callable, Coroutine, Iterator, Sequence
 
     from agno.models.base import Model
     from agno.models.message import MessageMetrics
@@ -72,6 +71,18 @@ type _JSONScalar = str | int | float | bool | None
 type _JSONValue = _JSONScalar | list["_JSONValue"] | dict[str, "_JSONValue"]
 _REQUEST_CONTEXT = ContextVar[dict[str, _JSONValue] | None]("mindroom_llm_request_log_context", default=None)
 _ACTIVE_MODEL_CALLS = ContextVar[frozenset[int]]("mindroom_llm_observability_active_models", default=frozenset())
+
+
+@dataclass
+class _WireToolsCapture:
+    """Request-local tools observed after provider wire transformations."""
+
+    enabled: bool
+    observed: bool = False
+    tools: list[dict[str, _JSONValue]] | None = None
+
+
+_WIRE_TOOLS_CAPTURE = ContextVar[_WireToolsCapture | None]("mindroom_llm_wire_tools_capture", default=None)
 
 
 def _daily_log_path(log_dir: str | None, default_log_dir: Path, now: datetime) -> Path:
@@ -156,6 +167,16 @@ def _request_tools(value: object) -> list[dict[str, _JSONValue]] | None:
     if isinstance(value, list) and all(isinstance(tool, dict) for tool in value):
         return cast("list[dict[str, _JSONValue]]", value)
     return None
+
+
+def record_llm_request_tools(tools: object) -> None:
+    """Record the final provider tools for the active request-log scope."""
+    capture = _WIRE_TOOLS_CAPTURE.get()
+    if capture is None or not capture.enabled:
+        return
+    capture.observed = True
+    normalized_tools = _json_safe(tools)
+    capture.tools = _request_tools(normalized_tools)
 
 
 def _normalized_string_list(values: object) -> list[str]:
@@ -265,6 +286,17 @@ def _model_call_scope(model: Model) -> Iterator[None]:
         yield
     finally:
         _ACTIVE_MODEL_CALLS.reset(token)
+
+
+@contextmanager
+def _model_request_scope(model: Model, wire_tools_capture: _WireToolsCapture) -> Iterator[None]:
+    """Bind one model invocation and its final wire-tools capture."""
+    capture_token = _WIRE_TOOLS_CAPTURE.set(wire_tools_capture)
+    try:
+        with _model_call_scope(model):
+            yield
+    finally:
+        _WIRE_TOOLS_CAPTURE.reset(capture_token)
 
 
 def stream_with_llm_request_log_context[StreamEventT](
@@ -445,6 +477,9 @@ async def _record_model_call(
     error: BaseException | None = None,
 ) -> None:
     """Record privacy-safe provider evidence in the tamper-evident run ledger."""
+    # Deferred: flight_recorder pulls in aiosqlite, which slim entry points must not import at module load.
+    from mindroom.flight_recorder import record_flight_event  # noqa: PLC0415
+
     if runtime_paths is None:
         return
     correlation_id = request_context.get("correlation_id")
@@ -480,6 +515,7 @@ async def _write_llm_request_log_if_present(
     log_dir: str | None,
     default_log_dir: Path,
     request_context: dict[str, _JSONValue],
+    wire_tools_capture: _WireToolsCapture,
 ) -> _RequestLogRef | None:
     """Write one request log entry when provider kwargs include API request messages.
 
@@ -497,7 +533,7 @@ async def _write_llm_request_log_if_present(
         model=model,
         agent_name=agent_name,
         messages=messages,
-        tools=_request_tools(kwargs.get("tools")),
+        tools=(wire_tools_capture.tools if wire_tools_capture.observed else _request_tools(kwargs.get("tools"))),
         log_path=request_log_ref.log_path,
         request_context=request_context,
         request_log_id=request_log_ref.request_log_id,
@@ -513,6 +549,7 @@ async def _write_llm_request_log_if_enabled(
     debug_config: DebugConfig,
     default_log_dir: Path,
     request_context: dict[str, _JSONValue],
+    wire_tools_capture: _WireToolsCapture,
 ) -> _RequestLogRef | None:
     """Write the sensitive request record only when explicitly enabled."""
     if not debug_config.log_llm_requests:
@@ -524,10 +561,223 @@ async def _write_llm_request_log_if_enabled(
         log_dir=debug_config.llm_request_log_dir,
         default_log_dir=default_log_dir,
         request_context=request_context,
+        wire_tools_capture=wire_tools_capture,
     )
 
 
-def install_llm_request_logging(  # noqa: C901, PLR0915
+async def _write_llm_request_log_best_effort(
+    *,
+    model: Model,
+    agent_name: str,
+    kwargs: dict[str, object],
+    debug_config: DebugConfig,
+    default_log_dir: Path,
+    request_context: dict[str, _JSONValue],
+    wire_tools_capture: _WireToolsCapture,
+) -> _RequestLogRef | None:
+    """Persist an optional request record without changing model-call behavior."""
+    try:
+        return await _write_llm_request_log_if_enabled(
+            model=model,
+            agent_name=agent_name,
+            kwargs=kwargs,
+            debug_config=debug_config,
+            default_log_dir=default_log_dir,
+            request_context=request_context,
+            wire_tools_capture=wire_tools_capture,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to persist LLM request log",
+            agent_name=agent_name,
+            model_id=model.id,
+        )
+        return None
+
+
+async def _write_llm_response_log_best_effort(
+    *,
+    model: Model,
+    agent_name: str,
+    configured_provider: str | None,
+    request_log_ref: _RequestLogRef | None,
+    usage: MessageMetrics | None,
+    request_context: dict[str, _JSONValue],
+) -> None:
+    """Emit usage and optional response records without affecting the model call."""
+    try:
+        await _write_llm_response_log(
+            model=model,
+            agent_name=agent_name,
+            configured_provider=configured_provider,
+            request_log_ref=request_log_ref,
+            usage=usage,
+            request_context=request_context,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to emit LLM response telemetry",
+            agent_name=agent_name,
+            model_id=model.id,
+        )
+
+
+async def _invoke_with_llm_request_logging(
+    *,
+    model: Model,
+    original_ainvoke: Callable[..., Coroutine[object, object, ModelResponse]],
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+    agent_name: str,
+    debug_config: DebugConfig,
+    default_log_dir: Path,
+    configured_provider: str | None,
+    request_context: dict[str, _JSONValue],
+    runtime_paths: RuntimePaths | None,
+) -> ModelResponse:
+    """Invoke one model and persist the request after wire tools are known."""
+    call_id = uuid4().hex
+    started_at = time.monotonic()
+    wire_tools_capture = _WireToolsCapture(enabled=debug_config.log_llm_requests)
+    try:
+        with _model_request_scope(model, wire_tools_capture):
+            response = await original_ainvoke(*args, **kwargs)
+    except BaseException as exc:
+        status = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
+        await _record_model_call(
+            runtime_paths=runtime_paths,
+            model=model,
+            agent_name=agent_name,
+            configured_provider=configured_provider,
+            request_context=request_context,
+            call_id=call_id,
+            status=status,
+            started_at=started_at,
+            usage=None,
+            error=exc,
+        )
+        raise
+    finally:
+        request_log_ref = await _write_llm_request_log_best_effort(
+            model=model,
+            agent_name=agent_name,
+            kwargs=kwargs,
+            debug_config=debug_config,
+            default_log_dir=default_log_dir,
+            request_context=request_context,
+            wire_tools_capture=wire_tools_capture,
+        )
+    await _record_model_call(
+        runtime_paths=runtime_paths,
+        model=model,
+        agent_name=agent_name,
+        configured_provider=configured_provider,
+        request_context=request_context,
+        call_id=call_id,
+        status="completed",
+        started_at=started_at,
+        usage=response.response_usage,
+    )
+    await _write_llm_response_log_best_effort(
+        model=model,
+        agent_name=agent_name,
+        configured_provider=configured_provider,
+        request_log_ref=request_log_ref,
+        usage=response.response_usage,
+        request_context=request_context,
+    )
+    return response
+
+
+def _stream_with_llm_request_logging(
+    *,
+    model: Model,
+    original_ainvoke_stream: Callable[..., AsyncIterator[ModelResponse]],
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+    agent_name: str,
+    debug_config: DebugConfig,
+    default_log_dir: Path,
+    configured_provider: str | None,
+    request_context: dict[str, _JSONValue],
+    runtime_paths: RuntimePaths | None,
+) -> AsyncIterator[ModelResponse]:
+    """Stream one model response and persist its final wire tools once."""
+    call_id = uuid4().hex
+
+    async def _stream() -> AsyncIterator[ModelResponse]:
+        started_at = time.monotonic()
+        wire_tools_capture = _WireToolsCapture(enabled=debug_config.log_llm_requests)
+        request_log_ref: _RequestLogRef | None = None
+        request_logged = False
+        last_usage: MessageMetrics | None = None
+        status = "abandoned"
+        error: BaseException | None = None
+
+        async def _write_request_once() -> None:
+            nonlocal request_log_ref, request_logged
+            if request_logged:
+                return
+            request_log_ref = await _write_llm_request_log_best_effort(
+                model=model,
+                agent_name=agent_name,
+                kwargs=kwargs,
+                debug_config=debug_config,
+                default_log_dir=default_log_dir,
+                request_context=request_context,
+                wire_tools_capture=wire_tools_capture,
+            )
+            request_logged = True
+
+        # finally: an abandoned stream (consumer break -> aclose()) must
+        # still record any usage already reported; awaiting during aclose()
+        # is allowed for async generators as long as nothing is yielded.
+        try:
+            scoped_stream = context_bound_async_stream(
+                context_factory=lambda: _model_request_scope(model, wire_tools_capture),
+                stream_factory=lambda: original_ainvoke_stream(*args, **kwargs),
+            )
+            try:
+                async for chunk in scoped_stream:
+                    await _write_request_once()
+                    if chunk.response_usage is not None:
+                        last_usage = chunk.response_usage
+                    yield chunk
+                status = "completed"
+            except BaseException as exc:
+                error = exc
+                if isinstance(exc, asyncio.CancelledError):
+                    status = "cancelled"
+                elif not isinstance(exc, GeneratorExit):
+                    status = "failed"
+                raise
+        finally:
+            await _write_request_once()
+            await _record_model_call(
+                runtime_paths=runtime_paths,
+                model=model,
+                agent_name=agent_name,
+                configured_provider=configured_provider,
+                request_context=request_context,
+                call_id=call_id,
+                status=status,
+                started_at=started_at,
+                usage=last_usage,
+                error=error,
+            )
+            await _write_llm_response_log_best_effort(
+                model=model,
+                agent_name=agent_name,
+                configured_provider=configured_provider,
+                request_log_ref=request_log_ref,
+                usage=last_usage,
+                request_context=request_context,
+            )
+
+    return _stream()
+
+
+def install_llm_request_logging(
     model: Model,
     *,
     agent_name: str,
@@ -547,123 +797,34 @@ def install_llm_request_logging(  # noqa: C901, PLR0915
     def _logged_ainvoke(*args: object, **kwargs: object) -> Coroutine[object, object, ModelResponse]:
         if id(model) in _ACTIVE_MODEL_CALLS.get():
             return original_ainvoke(*args, **kwargs)
-        request_context = _snapshot_request_log_context()
-        call_id = uuid4().hex
-
-        async def _invoke() -> ModelResponse:
-            started_at = time.monotonic()
-            request_log_ref = await _write_llm_request_log_if_enabled(
-                model=model,
-                agent_name=agent_name,
-                kwargs=kwargs,
-                debug_config=debug_config,
-                default_log_dir=default_log_dir,
-                request_context=request_context,
-            )
-            try:
-                with _model_call_scope(model):
-                    response = await original_ainvoke(*args, **kwargs)
-            except BaseException as exc:
-                status = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
-                await _record_model_call(
-                    runtime_paths=runtime_paths,
-                    model=model,
-                    agent_name=agent_name,
-                    configured_provider=configured_provider,
-                    request_context=request_context,
-                    call_id=call_id,
-                    status=status,
-                    started_at=started_at,
-                    usage=None,
-                    error=exc,
-                )
-                raise
-            await _record_model_call(
-                runtime_paths=runtime_paths,
-                model=model,
-                agent_name=agent_name,
-                configured_provider=configured_provider,
-                request_context=request_context,
-                call_id=call_id,
-                status="completed",
-                started_at=started_at,
-                usage=response.response_usage,
-            )
-            await _write_llm_response_log(
-                model=model,
-                agent_name=agent_name,
-                configured_provider=configured_provider,
-                request_log_ref=request_log_ref,
-                usage=response.response_usage,
-                request_context=request_context,
-            )
-            return response
-
-        return _invoke()
+        return _invoke_with_llm_request_logging(
+            model=model,
+            original_ainvoke=original_ainvoke,
+            args=args,
+            kwargs=kwargs,
+            agent_name=agent_name,
+            debug_config=debug_config,
+            default_log_dir=default_log_dir,
+            configured_provider=configured_provider,
+            request_context=_snapshot_request_log_context(),
+            runtime_paths=runtime_paths,
+        )
 
     def _logged_ainvoke_stream(*args: object, **kwargs: object) -> AsyncIterator[ModelResponse]:
         if id(model) in _ACTIVE_MODEL_CALLS.get():
             return original_ainvoke_stream(*args, **kwargs)
-        request_context = _snapshot_request_log_context()
-        call_id = uuid4().hex
-
-        async def _stream() -> AsyncIterator[ModelResponse]:
-            started_at = time.monotonic()
-            request_log_ref = await _write_llm_request_log_if_enabled(
-                model=model,
-                agent_name=agent_name,
-                kwargs=kwargs,
-                debug_config=debug_config,
-                default_log_dir=default_log_dir,
-                request_context=request_context,
-            )
-            last_usage: MessageMetrics | None = None
-            status = "abandoned"
-            error: BaseException | None = None
-            # finally: an abandoned stream (consumer break -> aclose()) must
-            # still record any usage already reported; awaiting during aclose()
-            # is allowed for async generators as long as nothing is yielded.
-            try:
-                scoped_stream = context_bound_async_stream(
-                    context_factory=lambda: _model_call_scope(model),
-                    stream_factory=lambda: original_ainvoke_stream(*args, **kwargs),
-                )
-                try:
-                    async for chunk in scoped_stream:
-                        if chunk.response_usage is not None:
-                            last_usage = chunk.response_usage
-                        yield chunk
-                    status = "completed"
-                except BaseException as exc:
-                    error = exc
-                    if isinstance(exc, asyncio.CancelledError):
-                        status = "cancelled"
-                    elif not isinstance(exc, GeneratorExit):
-                        status = "failed"
-                    raise
-            finally:
-                await _record_model_call(
-                    runtime_paths=runtime_paths,
-                    model=model,
-                    agent_name=agent_name,
-                    configured_provider=configured_provider,
-                    request_context=request_context,
-                    call_id=call_id,
-                    status=status,
-                    started_at=started_at,
-                    usage=last_usage,
-                    error=error,
-                )
-                await _write_llm_response_log(
-                    model=model,
-                    agent_name=agent_name,
-                    configured_provider=configured_provider,
-                    request_log_ref=request_log_ref,
-                    usage=last_usage,
-                    request_context=request_context,
-                )
-
-        return _stream()
+        return _stream_with_llm_request_logging(
+            model=model,
+            original_ainvoke_stream=original_ainvoke_stream,
+            args=args,
+            kwargs=kwargs,
+            agent_name=agent_name,
+            debug_config=debug_config,
+            default_log_dir=default_log_dir,
+            configured_provider=configured_provider,
+            request_context=_snapshot_request_log_context(),
+            runtime_paths=runtime_paths,
+        )
 
     model_dict["ainvoke"] = _logged_ainvoke
     model_dict["ainvoke_stream"] = _logged_ainvoke_stream

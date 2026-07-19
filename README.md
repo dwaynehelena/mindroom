@@ -24,7 +24,7 @@ https://github.com/user-attachments/assets/1f121c89-5418-4f42-bdfe-fb9de0fecd03
 
 - **Multi-agent orchestration** — define specialist agents and teams in `config.yaml`; a built-in router picks the responder when you don't @-mention one, and mentioning several agents makes them collaborate in a thread.
 - **Persistent memory** — agents remember people, preferences, and context across conversations and platforms (Mem0 + ChromaDB, stored on your disk).
-- **100+ tool integrations** — Gmail, GitHub, Google Drive, Home Assistant, shell, Python, web search, and more, plus native Matrix tools and a per-thread `todo` planner, with sandboxed execution and per-tool approval rules.
+- **100+ tool integrations** — Gmail, GitHub, Google Docs, Google Drive, Home Assistant, shell, Python, web search, and more, plus native Matrix tools and a per-thread `todo` planner, with sandboxed execution and per-tool approval rules.
 - **Knowledge bases (RAG)** — point an agent at a folder of files; MindRoom indexes it and can watch it for changes.
 - **Scheduling & automation** — cron or natural-language scheduled tasks (`!schedule`), background work with human escalation.
 - **Model routing** — a different model per agent, room, or thread (`!model`); route sensitive rooms to local Ollama and everything else to a cloud model.
@@ -114,7 +114,7 @@ See the [hosted Matrix deployment guide](docs/deployment/hosted-matrix.md) for f
 
 ### Self-hosted, from source
 
-Requires Python 3.12+ and [uv](https://github.com/astral-sh/uv); Node.js 20+ with [bun](https://bun.sh/) is optional for building the web dashboard.
+Requires Python 3.12+ and [uv](https://github.com/astral-sh/uv); the repo dev shell provides Node.js 24 with [bun](https://bun.sh/) for optionally building the web dashboard.
 
 ```bash
 git clone https://github.com/mindroom-ai/mindroom

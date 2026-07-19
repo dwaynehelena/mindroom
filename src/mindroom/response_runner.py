@@ -121,6 +121,24 @@ if TYPE_CHECKING:
 type _MatrixEventId = str
 _ToolContextResult = TypeVar("_ToolContextResult")
 _ToolStreamChunk = TypeVar("_ToolStreamChunk")
+_StateMutationResult = TypeVar("_StateMutationResult")
+
+
+async def _run_locked_source_preparation(
+    operation: Callable[[], _StateMutationResult],
+) -> _StateMutationResult:
+    """Run blocking source preparation off-loop without releasing its lock early."""
+    worker_task = asyncio.create_task(asyncio.to_thread(operation))
+    try:
+        return await asyncio.shield(worker_task)
+    except asyncio.CancelledError:
+        while not worker_task.done():
+            try:
+                await asyncio.shield(worker_task)
+            except asyncio.CancelledError:
+                continue
+        worker_task.result()
+        raise
 
 
 def _merge_response_extra_content(
@@ -275,6 +293,7 @@ class ResponseRequest:
     current_timestamp_ms: float | None = None
     current_prompt_is_structured: bool = False
     on_lifecycle_lock_acquired: Callable[[], None] | None = None
+    prepare_source_turn: Callable[[], bool] | None = None
     pipeline_timing: DispatchPipelineTiming | None = None
     queued_notice_reservation: QueuedHumanNoticeReservation | None = None
     on_sync_restart_cancelled: Callable[[], None] | None = None
@@ -425,7 +444,6 @@ class _PreparedResponseRuntime:
     session_id: str
     model_prompt: str
     tool_dispatch: ToolDispatchContext
-    room_mode: bool = False
 
 
 @dataclass
@@ -1092,6 +1110,27 @@ class ResponseRunner:
         if request.on_lifecycle_lock_acquired is not None:
             request.on_lifecycle_lock_acquired()
         request = self._request_with_locked_target(request, resolved_target)
+        if request.prepare_source_turn is not None and await _run_locked_source_preparation(
+            request.prepare_source_turn,
+        ):
+            self.deps.logger.info(
+                "response_suppressed_for_redacted_source",
+                source_event_id=request.response_envelope.source_event_id,
+            )
+            if request.existing_event_id is not None and request.existing_event_is_placeholder:
+                await self.deps.delivery_gateway.deliver_cancelled_visible_note(
+                    CancelledVisibleNoteRequest(
+                        target=resolved_target,
+                        event_id=request.existing_event_id,
+                        existing_event_is_placeholder=True,
+                        cancel_source="interrupted",
+                        identity=self._response_identity(
+                            request,
+                            response_kind="team" if history_scope.kind == "team" else "agent",
+                        ),
+                    ),
+                )
+            return None
         if not self._sync_restart_retry_is_current(
             request,
             history_scope=history_scope,
@@ -2045,17 +2084,16 @@ class ResponseRunner:
         finally:
             self.in_flight_response_count -= 1
 
-    async def _prepare_response_runtime_common(
+    @timed("prepare_response_runtime")
+    async def prepare_response_runtime(
         self,
         request: ResponseRequest,
-        *,
-        existing_event_uses_thread_id: bool,
-        room_mode: bool,
     ) -> _PreparedResponseRuntime:
+        """Resolve shared runtime context for one streaming or non-streaming response."""
         resolved_target = request.response_envelope.target
         response_thread_id = (
             request.thread_id
-            if request.existing_event_id and existing_event_uses_thread_id
+            if request.existing_event_id and not request.existing_event_is_placeholder
             else request.response_envelope.target.resolved_thread_id
         )
         resolved_target = resolved_target.with_thread_root(response_thread_id)
@@ -2091,39 +2129,6 @@ class ResponseRunner:
             session_id=session_id,
             model_prompt=resolved_model_prompt,
             tool_dispatch=tool_dispatch,
-            room_mode=room_mode,
-        )
-
-    @timed("prepare_non_streaming_runtime")
-    async def prepare_non_streaming_runtime(
-        self,
-        request: ResponseRequest,
-    ) -> _PreparedResponseRuntime:
-        """Resolve non-streaming runtime context."""
-        return await self._prepare_response_runtime_common(
-            request,
-            existing_event_uses_thread_id=not request.existing_event_is_placeholder,
-            room_mode=False,
-        )
-
-    @timed("prepare_streaming_runtime")
-    async def prepare_streaming_runtime(
-        self,
-        request: ResponseRequest,
-    ) -> _PreparedResponseRuntime:
-        """Resolve streaming runtime context."""
-        room_mode = (
-            self.deps.runtime.config.get_entity_thread_mode(
-                self.deps.agent_name,
-                self.deps.runtime_paths,
-                room_id=request.room_id,
-            )
-            == "room"
-        )
-        return await self._prepare_response_runtime_common(
-            request,
-            existing_event_uses_thread_id=not request.existing_event_is_placeholder,
-            room_mode=room_mode,
         )
 
     @timed("non_streaming_response_generation")
@@ -2347,7 +2352,7 @@ class ResponseRunner:
         """Process a message and send a response without streaming."""
         if request.pipeline_timing is not None:
             request.pipeline_timing.mark("response_runtime_start")
-        runtime = await self.prepare_non_streaming_runtime(request)
+        runtime = await self.prepare_response_runtime(request)
         if request.pipeline_timing is not None:
             request.pipeline_timing.mark("response_runtime_ready")
         request = self._request_with_locked_target(request, runtime.resolved_target)
@@ -2489,7 +2494,7 @@ class ResponseRunner:
         """Process a message and send a streamed response."""
         if request.pipeline_timing is not None:
             request.pipeline_timing.mark("response_runtime_start")
-        runtime = await self.prepare_streaming_runtime(request)
+        runtime = await self.prepare_response_runtime(request)
         if request.pipeline_timing is not None:
             request.pipeline_timing.mark("response_runtime_ready")
         request = self._request_with_locked_target(request, runtime.resolved_target)

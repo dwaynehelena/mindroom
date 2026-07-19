@@ -20,6 +20,7 @@ from mindroom import runtime_env_policy
 # Agent names
 ROUTER_AGENT_NAME = "router"
 VISIBLE_ROUTER_VOICE_ECHO_KEY = "com.mindroom.visible_router_voice_echo"
+DEFAULT_MINDROOM_URL = "http://127.0.0.1:8765"
 MINDROOM_COMPACTION_CHUNK_TIMEOUT_SECONDS = 180.0
 DEFAULT_TOOL_OUTPUT_AUTO_SAVE_THRESHOLD_BYTES = 50 * 1024
 _MINDROOM_DISPATCH_THREAD_READ_TIMEOUT_SECONDS = 1.0
@@ -1020,6 +1021,8 @@ def _find_config(*, process_env: Mapping[str, str]) -> Path:
 VOICE_PREFIX = "🎤 "
 ORIGINAL_SENDER_KEY = "com.mindroom.original_sender"
 SOURCE_KIND_KEY = "com.mindroom.source_kind"
+PER_FIRE_THREAD_ROOT_KEY = "com.mindroom.per_fire_thread_root"
+PER_FIRE_THREAD_ROOT_EVENT_ID_KEY = "com.mindroom.per_fire_thread_root_event_id"
 SCHEDULED_HISTORY_LIMIT_KEY = "com.mindroom.history_limit"
 HOOK_SOURCE_KEY = "com.mindroom.hook_source"
 HOOK_MESSAGE_RECEIVED_DEPTH_KEY = "com.mindroom.message_received_depth"
@@ -1030,6 +1033,7 @@ ATTACHMENT_IDS_KEY = "com.mindroom.attachment_ids"
 AI_RUN_METADATA_KEY = "io.mindroom.ai_run"
 MATRIX_TURN_SCHEMA_VERSION_METADATA_KEY = "matrix_turn_schema_version"
 MATRIX_TURN_DISCOVERY_EVENT_IDS_METADATA_KEY = "matrix_turn_discovery_event_ids"
+MATRIX_TURN_REDACTED_SOURCE_EVENT_IDS_METADATA_KEY = "matrix_turn_redacted_source_event_ids"
 MATRIX_EVENT_ID_METADATA_KEY = "matrix_event_id"
 MATRIX_RESPONSE_EVENT_ID_METADATA_KEY = "matrix_response_event_id"
 MATRIX_RESPONSE_OWNER_METADATA_KEY = "matrix_response_owner"

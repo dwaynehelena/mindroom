@@ -185,13 +185,21 @@ Approval-gated tools are stricter than plain ad-hoc chat access.
 Approval-gated tools only work there while the router is already joined.
 
 MindRoom compacts in one visible lifecycle.
-Per-agent compaction supports `enabled`, `threshold_tokens`, `threshold_percent`, `reserve_tokens`, and `model`.
+Per-agent compaction supports `enabled`, `threshold_tokens`, `threshold_percent`, `replay_window_tokens`, `reserve_tokens`, and `model`.
 When the active runtime model has a known `context_window`, MindRoom always computes a per-run replay plan that reduces or disables persisted replay before the model call if needed.
 Automatic destructive compaction is enabled by default through `defaults.compaction`, but it runs only when raw history exceeds the hard replay budget for the next reply.
 `threshold_tokens` and `threshold_percent` set a soft trigger budget for planning metadata and compaction notices.
 Crossing that soft trigger while still within the hard budget leaves the stored session unchanged and relies on replay fitting.
-Use `reserve_tokens` to leave hard-budget headroom, use `model` to choose the summary model, or set `enabled: false` to disable automatic pre-reply compaction for this agent.
-Replay safety always uses the active runtime model window.
+
+You can tune compaction behavior with these settings:
+
+- Use `replay_window_tokens` to cap persisted replay and required-compaction planning below the model's real context window without lowering the provider request limit.
+- Use `reserve_tokens` to leave hard-budget headroom.
+- Use `model` to choose the summary model.
+- Set `enabled: false` to disable automatic pre-reply compaction for this agent.
+
+When the active runtime model window is known, replay safety uses the smaller of it and `replay_window_tokens`.
+When that model window is unknown, an explicit `replay_window_tokens` still supplies the replay-planning window.
 If you set `compaction.model`, that summary model must also define its own `context_window`, but only for the durable summary-generation pass.
 If the current reply needs required compaction to preserve usable history, MindRoom sends `Compacting history...`, compacts before the model call, and edits that same notice with the result.
 Manual `compact_context` records a durable request that runs before the next reply in the same conversation scope.
@@ -255,6 +263,24 @@ defaults:
     - scheduler
     - shell:
         enable_run_shell_command: true     # global default for all agents
+```
+
+### Filtering Toolkit Functions
+
+Registered Agno Toolkit integrations accept `include_tools` and `exclude_tools` inline overrides even when those fields are not declared by the concrete toolkit constructor.
+`include_tools` is an allowlist, while `exclude_tools` is a denylist applied after the toolkit registers its functions.
+Use the function names exposed by the tool catalog.
+Unsupported non-Toolkit integrations reject these fields during config validation.
+
+```yaml
+agents:
+  research:
+    tools:
+      - searxng:
+          include_tools:
+            - search_web
+            - news_search
+            - image_search
 ```
 
 ### Clearing An Inherited Override
@@ -332,7 +358,7 @@ Adding or removing tools via chat does not discard existing per-agent overrides 
 `worker_tools` decides which tools run in the sandbox proxy instead of the main MindRoom process.
 When omitted, MindRoom routes `coding`, `docker`, `file`, `python`, and `shell` through the proxy by default.
 Registry-backed tools can be listed in `worker_tools`, and MindRoom will attempt to route them through the worker runtime.
-Some local-only tools stay in the primary runtime even when listed: `attachments`, `gmail`, `google_calendar`, `google_drive`, `google_sheets`, and `homeassistant`.
+Some local-only tools stay in the primary runtime even when listed: `attachments`, `desktop`, `gmail`, `google_calendar`, `google_docs`, `google_drive`, `google_sheets`, and `homeassistant`.
 Dedicated Docker workers also receive a projected read-only config snapshot so config-relative plugins, knowledge bases, and other worker-safe assets remain available without exposing unrelated primary-runtime state.
 Agent-scoped workers snapshot only that agent's projected context files and assigned knowledge bases, while scopes that intentionally share one worker across multiple agents keep the broader shared projection for that worker.
 Writable file-memory paths are rewritten into worker-owned state instead of being mounted from the host config tree.
@@ -343,7 +369,7 @@ Some integrations require `worker_scope` unset or `shared` because their credent
 That list includes `spotify`, `homeassistant`, and non-OAuth configured `mcp_<server_id>` tools.
 OAuth-backed remote MCP tools use requester-scoped OAuth credentials and can be used with `worker_scope: user` or `worker_scope: user_agent`.
 Among those shared-scope integrations, `homeassistant` always stays local regardless of `worker_tools` and is never proxied to the sandbox.
-`gmail`, `google_calendar`, `google_drive`, and `google_sheets` also always stay local.
+`gmail`, `google_calendar`, `google_docs`, `google_drive`, and `google_sheets` also always stay local.
 `spotify` can still be proxied through the sandbox.
 The built-in `memory`, `delegate`, and `self_config` tools are also created directly in the primary runtime today and are not routed through `worker_tools`.
 
@@ -391,7 +417,7 @@ Workers mount those canonical private-instance roots.
 They do not own them.
 
 The dashboard's generic credential forms only work for unscoped agents and agents with `worker_scope=shared`.
-OAuth providers that support scoped dashboard flows, such as the Google Drive, Gmail, Calendar, and Sheets providers, are the exception.
+OAuth providers that support scoped dashboard flows, such as the Google Drive, Docs, Gmail, Calendar, and Sheets providers, are the exception.
 For those providers, the dashboard can connect scoped `user` and `user_agent` credentials, but the Google tools still execute in the primary MindRoom runtime.
 Tools without a scoped OAuth provider still manage `user` and `user_agent` credentials through their worker runtime instead.
 

@@ -41,6 +41,7 @@ from mindroom.tools.browser import browser_tools
 from mindroom.tools.browserbase import browserbase_tools
 from mindroom.tools.cal_com import cal_com_tools
 from mindroom.tools.calculator import calculator_tools
+from mindroom.tools.callback_manager import callback_manager_tools
 from mindroom.tools.cartesia import cartesia_tools
 from mindroom.tools.claude_agent import claude_agent_tools
 from mindroom.tools.clickup import clickup_tools
@@ -54,6 +55,7 @@ from mindroom.tools.custom_api import custom_api_tools
 from mindroom.tools.dalle import dalle_tools
 from mindroom.tools.daytona import daytona_tools
 from mindroom.tools.desi_vocal import desi_vocal_tools
+from mindroom.tools.desktop import desktop_tools
 from mindroom.tools.discord import discord_tools
 from mindroom.tools.docker import docker_tools
 from mindroom.tools.duckdb import duckdb_tools
@@ -74,6 +76,7 @@ from mindroom.tools.github import github_tools
 from mindroom.tools.gmail import gmail_tools
 from mindroom.tools.google_bigquery import google_bigquery_tools
 from mindroom.tools.google_calendar import google_calendar_tools
+from mindroom.tools.google_docs import google_docs_tools
 from mindroom.tools.google_drive import google_drive_tools
 from mindroom.tools.google_maps import google_maps_tools
 from mindroom.tools.google_scholar import google_scholar_tools
@@ -169,6 +172,7 @@ __all__ = [
     "browserbase_tools",
     "cal_com_tools",
     "calculator_tools",
+    "callback_manager_tools",
     "cartesia_tools",
     "claude_agent_tools",
     "clickup_tools",
@@ -182,6 +186,7 @@ __all__ = [
     "dalle_tools",
     "daytona_tools",
     "desi_vocal_tools",
+    "desktop_tools",
     "discord_tools",
     "docker_tools",
     "duckdb_tools",
@@ -202,6 +207,7 @@ __all__ = [
     "gmail_tools",
     "google_bigquery_tools",
     "google_calendar_tools",
+    "google_docs_tools",
     "google_drive_tools",
     "google_maps_tools",
     "google_scholar_tools",
