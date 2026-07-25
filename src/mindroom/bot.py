@@ -128,6 +128,7 @@ if TYPE_CHECKING:
     from mindroom.matrix.cache import AgentMessageSnapshot, ConversationEventCache, EventCacheWriteCoordinator
     from mindroom.matrix.identity import MatrixID
     from mindroom.matrix.media import MatrixMediaEvent
+    from mindroom.response_admission import ResponseAdmissionGate
     from mindroom.runtime_protocols import OrchestratorRuntime
     from mindroom.runtime_support import StartupThreadPrewarmRegistry
     from mindroom.tool_system.events import ToolTraceEntry
@@ -730,10 +731,15 @@ class AgentBot:
         """Return the number of active response lifecycles."""
         return self._response_runner.in_flight_response_count
 
-    @in_flight_response_count.setter
-    def in_flight_response_count(self, value: int) -> None:
-        """Update the number of active response lifecycles."""
-        self._response_runner.in_flight_response_count = value
+    @property
+    def admission_gate(self) -> ResponseAdmissionGate:
+        """Return the gate deciding whether responses may start right now."""
+        return self._runtime_view.response_admission_gate
+
+    @admission_gate.setter
+    def admission_gate(self, value: ResponseAdmissionGate) -> None:
+        """Bind the orchestrator-owned response-admission gate."""
+        self._runtime_view.response_admission_gate = value
 
     @property
     def pending_sync_restart_retry_room_ids(self) -> frozenset[str]:
@@ -1035,6 +1041,7 @@ class AgentBot:
         own startup timeout for the pre-first-response window.
         """
         self._sync_shutting_down = False
+        self._response_runner.resume_pending_admissions()
         self._calls_reconcile_pending = self._call_manager is not None
         mark_matrix_sync_loop_started(self.agent_name)
 
@@ -1689,6 +1696,7 @@ class AgentBot:
     ) -> None:
         """Cancel work that must not outlive the Matrix sync loop."""
         self._sync_shutting_down = True
+        self._response_runner.refuse_pending_admissions()
         await self._cancel_startup_thread_prewarm()
         if self.agent_name == ROUTER_AGENT_NAME:
             await self._cancel_deferred_overdue_task_drain()

@@ -45,6 +45,7 @@ from mindroom.inbound_turn_normalizer import InboundTurnNormalizer, InboundTurnN
 from mindroom.ingress_validation import IngressValidator, IngressValidatorDeps
 from mindroom.logging_config import get_logger
 from mindroom.matrix.cache.thread_history_result import thread_history_result
+from mindroom.response_admission import ResponseAdmissionRefusedError
 from mindroom.response_payload_preparation import DispatchPayloadInputs, ResponsePayloadPreparation
 from mindroom.response_runner import ResponseRequest
 from mindroom.sync_restart_retry import SyncRestartRetryQueue
@@ -98,6 +99,7 @@ class _RecordingResponseRunner:
     """
 
     response_event_id: str | None = "$response:localhost"
+    pre_lock_error: Exception | None = None
     deferred_sync_restart_error: asyncio.CancelledError | None = None
     requests: list[ResponseRequest] = field(default_factory=list)
     team_requests: list[ResponseRequest] = field(default_factory=list)
@@ -130,6 +132,8 @@ class _RecordingResponseRunner:
 
     async def generate_response(self, request: ResponseRequest) -> str | None:
         self.requests.append(request)
+        if self.pre_lock_error is not None:
+            raise self.pre_lock_error
         if request.on_lifecycle_lock_acquired is not None:
             request.on_lifecycle_lock_acquired()
         if request.prepare_source_turn is not None and request.prepare_source_turn():
@@ -151,6 +155,8 @@ class _RecordingResponseRunner:
         team_mode: str,  # noqa: ARG002
     ) -> str | None:
         self.team_requests.append(request)
+        if self.pre_lock_error is not None:
+            raise self.pre_lock_error
         if request.on_lifecycle_lock_acquired is not None:
             request.on_lifecycle_lock_acquired()
         if request.prepare_source_turn is not None and request.prepare_source_turn():
@@ -1033,6 +1039,25 @@ async def test_deferred_sync_restart_records_handled_outcome_before_rethrow(conf
 
 
 @pytest.mark.asyncio
+async def test_pre_lock_replacement_refusal_poisons_coalescing_drain(config: Config, tmp_path: Path) -> None:
+    """A refused source callback must invalidate checkpoint certification."""
+    harness = _build_harness(config, tmp_path)
+    harness.runner.pre_lock_error = ResponseAdmissionRefusedError()
+    room = _room_with_members(config, "general")
+    event = _text_event("please survive replacement")
+
+    await harness.controller.handle_text_event(room, event)
+    drain_result = await harness.gate.drain_all()
+    await asyncio.gather(*harness.runner.inbox_tasks, return_exceptions=True)
+
+    assert drain_result.completed is False
+    assert drain_result.dispatch_failure_count == 1
+    record = harness.turn_store.get_turn_record(event.event_id)
+    assert record is not None
+    assert record.completed is False
+
+
+@pytest.mark.asyncio
 async def test_command_turn_records_terminal_outcome_through_turn_store(config: Config, tmp_path: Path) -> None:
     """A ``!command`` turn executes on the router and records a terminal TurnStore outcome.
 
@@ -1211,6 +1236,50 @@ async def test_interactive_selection_persistence_failure_prevents_ack_and_genera
 
     assert harness.gateway.sent == []
     assert harness.runner.requests == []
+
+
+@pytest.mark.asyncio
+async def test_interactive_selection_replacement_refusal_uses_checkpoint_replay(
+    config: Config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replaced runtime must bubble refusal so its Matrix event is replayed."""
+    harness = _build_harness(config, tmp_path)
+    room = nio.MatrixRoom(_ROOM_ID, _entity_user_id(config, "general"))
+    selection = interactive.InteractiveSelection(
+        question_event_id="$question:localhost",
+        question_text="Which option should I use?",
+        selection_key="1",
+        selected_label="Option 1",
+        selected_value="Option 1",
+        thread_id="$thread-root:localhost",
+    )
+    selection_event_id = "$selection:localhost"
+
+    async def refuse(request: ResponseRequest) -> str | None:
+        harness.runner.requests.append(request)
+        raise ResponseAdmissionRefusedError
+
+    monkeypatch.setattr(harness.runner, "generate_response", refuse)
+
+    with pytest.raises(ResponseAdmissionRefusedError):
+        await harness.controller.handle_interactive_selection(
+            room,
+            selection=selection,
+            user_id=_SENDER,
+            source_event_id=selection_event_id,
+        )
+
+    # Only the pre-existing acknowledgement was sent. Refusal performs no
+    # untimed Matrix settlement inside replacement shutdown.
+    assert len(harness.gateway.sent) == 1
+    assert harness.gateway.edited == []
+
+    record = harness.turn_store.get_turn_record(selection_event_id)
+    assert record is not None
+    assert record.response_event_id is None
+    assert record.completed is False
 
 
 @pytest.mark.asyncio
