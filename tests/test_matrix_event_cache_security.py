@@ -1436,9 +1436,15 @@ async def test_cached_sidecar_hydration_cannot_cross_principal_purge(
     )
     rows_loaded = asyncio.Event()
     release_rows = asyncio.Event()
+    # Patch the method the read actually calls. Patching a seam production no longer routes
+    # through does not fail this test, it hangs it: the pause never fires, the reader never
+    # blocks, and the test waits out its timeout looking merely slow.
     original_get_thread_events = reader_cache.get_thread_events
 
-    async def pause_after_read(read_room_id: str, read_thread_id: str) -> list[dict[str, Any]] | None:
+    async def pause_after_read(
+        read_room_id: str,
+        read_thread_id: str,
+    ) -> list[dict[str, Any]] | None:
         rows = await original_get_thread_events(read_room_id, read_thread_id)
         rows_loaded.set()
         await release_rows.wait()

@@ -37,10 +37,10 @@ if TYPE_CHECKING:
 
     from .agent_message_snapshot import AgentMessageSnapshot
     from .cache_maintenance import CacheMaintenanceReport
-    from .event_cache import ThreadCacheState, ThreadRevision
+    from .event_cache import ThreadCacheState
 
 
-_POSTGRES_EVENT_CACHE_SCHEMA_VERSION = 3
+_POSTGRES_EVENT_CACHE_SCHEMA_VERSION = 4
 _DEFAULT_PRINCIPAL_ID = "__mindroom_default_principal__"
 _POSTGRES_SCHEMA_LOCK_NAME = "mindroom_event_cache_schema"
 _MAX_TRANSIENT_OPERATION_ATTEMPTS = 2
@@ -191,7 +191,7 @@ async def _initialize_postgres_event_cache_db(
             """,
         )
         current_schema_version = await _postgres_schema_version(db)
-        if current_schema_version not in (None, 1, 2, _POSTGRES_EVENT_CACHE_SCHEMA_VERSION):
+        if current_schema_version not in (None, 1, 2, 3, _POSTGRES_EVENT_CACHE_SCHEMA_VERSION):
             msg = (
                 "PostgreSQL Matrix event cache schema version "
                 f"{current_schema_version} is not compatible with expected version "
@@ -292,6 +292,7 @@ async def _create_postgres_event_cache_schema(db: AsyncConnection) -> None:
             room_id TEXT NOT NULL,
             origin_server_ts BIGINT NOT NULL,
             event_json TEXT NOT NULL,
+            sender TEXT NOT NULL DEFAULT '',
             cached_at DOUBLE PRECISION NOT NULL,
             write_seq BIGINT NOT NULL DEFAULT nextval('mindroom_event_cache_write_seq'),
             PRIMARY KEY (namespace, room_id, event_id)
@@ -1248,8 +1249,12 @@ class PostgresEventCache:
             if thread_id is not None:
                 self._runtime.forget_pending_thread_invalidation(room_id, thread_id, pending)
 
-    async def get_thread_events(self, room_id: str, thread_id: str) -> list[dict[str, Any]] | None:
-        """Return cached events for one thread sorted by timestamp."""
+    async def get_thread_events(
+        self,
+        room_id: str,
+        thread_id: str,
+    ) -> list[dict[str, Any]] | None:
+        """Return one thread's cached events oldest first, collapsed to one edit per message."""
         return await self._operation(
             room_id,
             operation="get_thread_events",
@@ -1262,40 +1267,13 @@ class PostgresEventCache:
             ),
         )
 
-    async def get_thread_events_written_between(
-        self,
-        room_id: str,
-        thread_id: str,
-        *,
-        after_write_seq: int,
-        through_write_seq: int,
-        after_thread_write_seq: int,
-        through_thread_write_seq: int,
-    ) -> list[dict[str, Any]]:
-        """Return thread events changed in bounded payload or thread-index intervals."""
+    async def get_thread_event_ids(self, room_id: str, thread_id: str) -> set[str]:
+        """Return every raw event ID this thread holds, superseded edits included."""
         return await self._operation(
             room_id,
-            operation="get_thread_events_written_between",
-            disabled_result=[],
-            callback=lambda db: postgres_event_cache_threads.load_thread_events_written_between(
-                db,
-                namespace=self._runtime.namespace,
-                room_id=room_id,
-                thread_id=thread_id,
-                after_write_seq=after_write_seq,
-                through_write_seq=through_write_seq,
-                after_thread_write_seq=after_thread_write_seq,
-                through_thread_write_seq=through_thread_write_seq,
-            ),
-        )
-
-    async def get_thread_revision(self, room_id: str, thread_id: str) -> ThreadRevision | None:
-        """Return the durable revision identity of one non-empty cached thread."""
-        return await self._operation(
-            room_id,
-            operation="get_thread_revision",
-            disabled_result=None,
-            callback=lambda db: postgres_event_cache_threads.load_thread_revision(
+            operation="get_thread_event_ids",
+            disabled_result=set(),
+            callback=lambda db: postgres_event_cache_threads.load_thread_event_ids(
                 db,
                 namespace=self._runtime.namespace,
                 room_id=room_id,

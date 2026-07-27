@@ -64,7 +64,6 @@ from mindroom.matrix.thread_diagnostics import (
     is_thread_history_degraded,
 )
 from mindroom.matrix.thread_membership import resolve_event_thread_membership
-from mindroom.matrix.thread_resolution_reuse import ThreadResolutionReuseCache
 from mindroom.matrix.thread_room_scan import (
     fetch_event_info_for_client,
     lookup_thread_id_from_conversation_cache,
@@ -301,10 +300,15 @@ async def _apply_cached_latest_edit(
 
     event_info = EventInfo.from_event(event_source)
     event_id = event_source.get("event_id")
-    if event_info.is_edit or not isinstance(event_id, str) or not event_id:
+    sender = event_source.get("sender")
+    if event_info.is_edit or not isinstance(event_id, str) or not event_id or not isinstance(sender, str):
         return event_source
 
-    latest_edit_source = await event_cache.get_latest_edit(room_id, event_id)
+    # Scoped to this event's own sender. A replacement is only legitimate from the sender of the
+    # event it replaces, and without this the newest edit from anyone wins - so this path would
+    # serve someone else's text under the author's event, while the collapsed thread read of the
+    # same cache correctly refuses it.
+    latest_edit_source = await event_cache.get_latest_edit(room_id, event_id, sender=sender)
     if latest_edit_source is None:
         return event_source
 
@@ -444,11 +448,9 @@ class MatrixConversationCache(ConversationCacheProtocol):
     _outbound: ThreadOutboundWritePolicy = field(init=False, repr=False)
     _live: ThreadLiveWritePolicy = field(init=False, repr=False)
     _sync: ThreadSyncWritePolicy = field(init=False, repr=False)
-    _thread_resolution_reuse: ThreadResolutionReuseCache = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Bind extracted read/write collaborators to this facade."""
-        self._thread_resolution_reuse = ThreadResolutionReuseCache()
         self._reads = ThreadReadPolicy(
             logger_getter=lambda: self.logger,
             runtime=self.runtime,
@@ -744,9 +746,15 @@ class MatrixConversationCache(ConversationCacheProtocol):
         room_id: str,
         thread_id: str,
     ) -> set[str] | None:
-        """Read raw event IDs for repair bookkeeping without failing the user-facing read."""
+        """Read raw event IDs for repair bookkeeping without failing the user-facing read.
+
+        Deliberately not ``get_thread_events``: that read collapses superseded edits away, and a
+        retained delta for one of them would then read as permanently missing and invalidate the
+        thread on every reconciliation. This asks the question bookkeeping actually has - which
+        rows are durably present - which is not the same as what the thread looks like.
+        """
         try:
-            event_sources = await self.runtime.event_cache.get_thread_events(room_id, thread_id)
+            return await self.runtime.event_cache.get_thread_event_ids(room_id, thread_id)
         except Exception as exc:
             self.logger.warning(
                 "Failed to inspect raw thread cache during repair",
@@ -756,7 +764,6 @@ class MatrixConversationCache(ConversationCacheProtocol):
                 error=str(exc),
             )
             return None
-        return self._event_ids(event_sources or ())
 
     async def _prepare_pending_thread_repair_deltas(
         self,
@@ -965,7 +972,6 @@ class MatrixConversationCache(ConversationCacheProtocol):
             trusted_sender_ids=self._trusted_sender_ids(),
             caller_label=caller_label,
             coordinator_queue_wait_ms=coordinator_queue_wait_ms,
-            resolution_reuse=self._thread_resolution_reuse,
             refill=refill if coordinator is not None else None,
         )
 

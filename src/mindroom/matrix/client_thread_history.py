@@ -55,7 +55,6 @@ from mindroom.matrix.cache import (
     ThreadCacheReplaceOutcome,
     ThreadCacheState,
     ThreadHistoryResult,
-    ThreadRevision,
     is_opaque_encrypted_event_source,
     normalize_nio_event_for_cache,
     thread_cache_rejection_reason,
@@ -67,8 +66,8 @@ from mindroom.matrix.cache.thread_cache_invalidation import (
 )
 from mindroom.matrix.client_visible_messages import (
     ResolvedVisibleMessage,
+    ThreadEditCandidates,
     apply_latest_edits_to_messages,
-    record_latest_thread_edit,
 )
 from mindroom.matrix.event_info import EventInfo, is_thread_affecting_relation
 from mindroom.matrix.media import (
@@ -79,7 +78,6 @@ from mindroom.matrix.membership_fence import UNCERTIFIED_MEMBERSHIP_EPOCH
 from mindroom.matrix.message_content import (
     SidecarHydrationBatch,
     extract_and_resolve_message,
-    has_sidecar_references,
     prepare_sidecar_hydration_batch,
     resolve_event_source_content,
 )
@@ -103,13 +101,6 @@ from mindroom.matrix.thread_projection import (
     resolve_thread_ids_for_event_infos,
     sort_thread_event_sources_root_first,
     sort_thread_messages_root_first,
-)
-from mindroom.matrix.thread_resolution_reuse import (
-    ThreadResolutionReuseCache,
-    ThreadResolutionSnapshot,
-    build_thread_resolution_snapshot,
-    reusable_event_source_suffix,
-    snapshot_matches_revision,
 )
 from mindroom.matrix.visible_body import visible_body_from_event_source
 from mindroom.timing import elapsed_ms_since
@@ -447,14 +438,12 @@ def _sidecar_hydration_sources(
 
 @dataclass(slots=True)
 class _ResolvedThreadEventSources:
-    """One resolution pass over raw thread rows plus the inputs needed to reuse it later."""
+    """One resolution pass over raw thread rows."""
 
     messages: list[ResolvedVisibleMessage]
     sidecar_hydration_ms: float
     input_order_by_event_id: dict[str, int]
     related_event_id_by_event_id: dict[str, str]
-    hydration_complete: bool
-    sidecar_texts: dict[tuple[str, str], str]
 
 
 async def _resolve_thread_history_from_event_sources_timed(
@@ -485,7 +474,7 @@ async def _resolve_thread_history_from_event_sources_timed(
         if (parsed_event := _parse_room_message_event(event_source)) is not None
     ]
     messages_by_event_id: dict[str, ResolvedVisibleMessage] = {}
-    latest_edits_by_original_event_id: dict[str, tuple[nio.RoomMessageText | nio.RoomMessageNotice, str | None]] = {}
+    edit_candidates = ThreadEditCandidates()
     sidecar_hydration_started = time.perf_counter()
     hydration_sources = _sidecar_hydration_sources(event_sources, hydrate_sidecars=hydrate_sidecars)
     hydration_batch = await prepare_sidecar_hydration_batch(
@@ -501,15 +490,13 @@ async def _resolve_thread_history_from_event_sources_timed(
         if bundled_replacement_source is not None:
             bundled_replacement = nio.Event.parse_event(bundled_replacement_source)
             if isinstance(bundled_replacement, _VISIBLE_ROOM_MESSAGE_EVENT_TYPES):
-                record_latest_thread_edit(
+                edit_candidates.record(
                     bundled_replacement,
                     event_info=EventInfo.from_event(bundled_replacement.source),
-                    latest_edits_by_original_event_id=latest_edits_by_original_event_id,
                 )
-        if isinstance(event, _VISIBLE_ROOM_MESSAGE_EVENT_TYPES) and record_latest_thread_edit(
+        if isinstance(event, _VISIBLE_ROOM_MESSAGE_EVENT_TYPES) and edit_candidates.record(
             event,
             event_info=event_info,
-            latest_edits_by_original_event_id=latest_edits_by_original_event_id,
         ):
             continue
         if event_info.is_edit or event.event_id in messages_by_event_id:
@@ -531,7 +518,7 @@ async def _resolve_thread_history_from_event_sources_timed(
     await apply_latest_edits_to_messages(
         client,
         messages_by_event_id=messages_by_event_id,
-        latest_edits_by_original_event_id=latest_edits_by_original_event_id,
+        edit_candidates=edit_candidates,
         required_thread_id=thread_id,
         event_cache=event_cache,
         room_id=room_id,
@@ -546,17 +533,11 @@ async def _resolve_thread_history_from_event_sources_timed(
         input_order_by_event_id=input_order_by_event_id,
         related_event_id_by_event_id=related_event_id_by_event_id,
     )
-    if hydration_batch is None:
-        hydration_complete = not has_sidecar_references(hydration_sources)
-    else:
-        hydration_complete = hydration_batch.references <= frozenset(hydration_batch.cached_texts)
     return _ResolvedThreadEventSources(
         messages=messages,
         sidecar_hydration_ms=elapsed_ms_since(sidecar_hydration_started, clock=time.perf_counter),
         input_order_by_event_id=input_order_by_event_id,
         related_event_id_by_event_id=related_event_id_by_event_id,
-        hydration_complete=hydration_complete,
-        sidecar_texts={} if hydration_batch is None else dict(hydration_batch.cached_texts),
     )
 
 
@@ -629,6 +610,9 @@ async def _load_stale_cached_thread_history(
     }
     if cache_reject_diagnostics is not None:
         diagnostics.update(cache_reject_diagnostics)
+    # Same rule as the trusted-cache path: a cached read cannot drop messages, so completeness
+    # turns only on whether sidecars were hydrated. This result is already flagged degraded, but
+    # is_full_history is a separate signal gating planning completeness and the model refresh.
     return _thread_history_result(
         resolved_history,
         is_full_history=hydrate_sidecars,
@@ -646,22 +630,18 @@ async def _resolve_cached_thread_history(
     hydrate_sidecars: bool = True,
     expected_membership_epoch: int,
     trusted_sender_ids: Collection[str] = (),
-    resolution_reuse: ThreadResolutionReuseCache | None = None,
-    revision: ThreadRevision | None = None,
 ) -> tuple[list[ResolvedVisibleMessage] | None, float]:
     """Resolve cached thread history or invalidate the cache entry on corruption."""
     try:
-        return await _resolve_cached_thread_history_with_reuse(
+        resolved = await _resolve_thread_history_from_event_sources_timed(
             client,
             room_id=room_id,
             thread_id=thread_id,
-            event_cache=event_cache,
-            cached_event_sources=cached_event_sources,
+            event_sources=cached_event_sources,
             hydrate_sidecars=hydrate_sidecars,
+            event_cache=event_cache,
             expected_membership_epoch=expected_membership_epoch,
             trusted_sender_ids=trusted_sender_ids,
-            resolution_reuse=resolution_reuse,
-            revision=revision,
         )
     except Exception as exc:
         logger.warning(
@@ -670,112 +650,9 @@ async def _resolve_cached_thread_history(
             thread_id=thread_id,
             error=str(exc),
         )
-        if resolution_reuse is not None:
-            resolution_reuse.discard(room_id, thread_id)
         await _invalidate_thread_cache_entry(event_cache, room_id=room_id, thread_id=thread_id)
         return None, 0.0
-
-
-async def _resolve_cached_thread_history_with_reuse(
-    client: nio.AsyncClient,
-    *,
-    room_id: str,
-    thread_id: str,
-    event_cache: ConversationEventCache,
-    cached_event_sources: Sequence[dict[str, Any]],
-    hydrate_sidecars: bool,
-    expected_membership_epoch: int,
-    trusted_sender_ids: Collection[str],
-    resolution_reuse: ThreadResolutionReuseCache | None,
-    revision: ThreadRevision | None,
-) -> tuple[list[ResolvedVisibleMessage], float]:
-    """Fully resolve one durable-cache read and retain its reusable projection."""
-    resolved = await _resolve_thread_history_from_event_sources_timed(
-        client,
-        room_id=room_id,
-        thread_id=thread_id,
-        event_sources=cached_event_sources,
-        hydrate_sidecars=hydrate_sidecars,
-        event_cache=event_cache,
-        expected_membership_epoch=expected_membership_epoch,
-        trusted_sender_ids=trusted_sender_ids,
-    )
-    # The revision may predate the rows just resolved. Sequences are monotonic, so a stale
-    # revision can never produce a false exact match later, and the known-ID suffix guard
-    # rejects any delta row the snapshot already contains; the race costs one full re-resolve.
-    if resolution_reuse is not None and resolved.hydration_complete and revision is not None:
-        resolution_reuse.store(
-            room_id,
-            thread_id,
-            build_thread_resolution_snapshot(
-                event_sources=cached_event_sources,
-                messages=resolved.messages,
-                input_order_by_event_id=resolved.input_order_by_event_id,
-                related_event_id_by_event_id=resolved.related_event_id_by_event_id,
-                trusted_sender_ids=frozenset(trusted_sender_ids),
-                membership_epoch=expected_membership_epoch,
-                revision=revision,
-                sidecar_texts=resolved.sidecar_texts,
-            ),
-        )
     return resolved.messages, resolved.sidecar_hydration_ms
-
-
-async def _resolve_reused_thread_suffix(
-    client: nio.AsyncClient,
-    *,
-    room_id: str,
-    thread_id: str,
-    event_cache: ConversationEventCache,
-    snapshot: ThreadResolutionSnapshot,
-    suffix: list[dict[str, Any]],
-    revision: ThreadRevision,
-    expected_membership_epoch: int,
-    trusted_sender_ids: Collection[str],
-    resolution_reuse: ThreadResolutionReuseCache,
-) -> tuple[list[ResolvedVisibleMessage], float, str] | None:
-    """Resolve only the appended raw rows and merge them onto the reusable snapshot."""
-    suffix_resolution = await _resolve_thread_history_from_event_sources_timed(
-        client,
-        room_id=room_id,
-        thread_id=thread_id,
-        event_sources=suffix,
-        hydrate_sidecars=True,
-        event_cache=event_cache,
-        expected_membership_epoch=expected_membership_epoch,
-        trusted_sender_ids=trusted_sender_ids,
-    )
-    if not suffix_resolution.hydration_complete:
-        return None
-    prefix_length = snapshot.revision.event_count
-    input_order_by_event_id = dict(snapshot.input_order_by_event_id)
-    for event_id, suffix_index in suffix_resolution.input_order_by_event_id.items():
-        input_order_by_event_id[event_id] = prefix_length + suffix_index
-    related_event_id_by_event_id = dict(snapshot.related_event_id_by_event_id)
-    related_event_id_by_event_id.update(suffix_resolution.related_event_id_by_event_id)
-    messages = snapshot.cloned_messages() + suffix_resolution.messages
-    sort_thread_messages_root_first(
-        messages,
-        thread_id=thread_id,
-        input_order_by_event_id=input_order_by_event_id,
-        related_event_id_by_event_id=related_event_id_by_event_id,
-    )
-    resolution_reuse.store(
-        room_id,
-        thread_id,
-        build_thread_resolution_snapshot(
-            event_sources=suffix,
-            messages=messages,
-            input_order_by_event_id=input_order_by_event_id,
-            related_event_id_by_event_id=related_event_id_by_event_id,
-            trusted_sender_ids=snapshot.trusted_sender_ids,
-            membership_epoch=expected_membership_epoch,
-            revision=revision,
-            sidecar_texts={**snapshot.sidecar_texts, **suffix_resolution.sidecar_texts},
-            prior_known_event_ids=snapshot.known_event_ids,
-        ),
-    )
-    return messages, suffix_resolution.sidecar_hydration_ms, "incremental"
 
 
 def _cache_reject_diagnostics(
@@ -802,151 +679,6 @@ def _cache_reject_diagnostics(
     return diagnostics
 
 
-async def _try_reuse_cached_thread_resolution(
-    client: nio.AsyncClient,
-    *,
-    room_id: str,
-    thread_id: str,
-    event_cache: ConversationEventCache,
-    revision: ThreadRevision | None,
-    membership_epoch: int,
-    trusted_sender_ids: Collection[str],
-    resolution_reuse: ThreadResolutionReuseCache | None,
-) -> tuple[list[ResolvedVisibleMessage], float, str] | None:
-    """Reuse an exact projection or merge a complete append-only durable delta."""
-    if resolution_reuse is None or revision is None or (snapshot := resolution_reuse.get(room_id, thread_id)) is None:
-        return None
-    snapshot_trusted_sender_ids = frozenset(trusted_sender_ids)
-    if snapshot_matches_revision(
-        snapshot,
-        trusted_sender_ids=snapshot_trusted_sender_ids,
-        membership_epoch=membership_epoch,
-        revision=revision,
-    ):
-        if not await _snapshot_sidecars_unchanged(
-            event_cache,
-            room_id=room_id,
-            thread_id=thread_id,
-            membership_epoch=membership_epoch,
-            snapshot=snapshot,
-        ):
-            return None
-        return snapshot.cloned_messages(), 0.0, "reuse"
-    if (
-        snapshot.trusted_sender_ids != snapshot_trusted_sender_ids
-        or snapshot.membership_epoch != membership_epoch
-        or revision.event_count <= snapshot.revision.event_count
-    ):
-        return None
-    if not await _snapshot_sidecars_unchanged(
-        event_cache,
-        room_id=room_id,
-        thread_id=thread_id,
-        membership_epoch=membership_epoch,
-        snapshot=snapshot,
-    ):
-        return None
-    return await _try_merge_cached_thread_delta(
-        client,
-        room_id=room_id,
-        thread_id=thread_id,
-        event_cache=event_cache,
-        revision=revision,
-        membership_epoch=membership_epoch,
-        trusted_sender_ids=trusted_sender_ids,
-        resolution_reuse=resolution_reuse,
-        snapshot=snapshot,
-        snapshot_trusted_sender_ids=snapshot_trusted_sender_ids,
-    )
-
-
-async def _snapshot_sidecars_unchanged(
-    event_cache: ConversationEventCache,
-    *,
-    room_id: str,
-    thread_id: str,
-    membership_epoch: int,
-    snapshot: ThreadResolutionSnapshot,
-) -> bool:
-    """Return whether every sidecar dependency still has its exact cached text."""
-    if not snapshot.sidecar_texts:
-        return True
-    try:
-        current_texts = await event_cache.get_mxc_texts(
-            room_id,
-            tuple(snapshot.sidecar_texts),
-            expected_membership_epoch=membership_epoch,
-        )
-    except Exception as exc:
-        logger.debug(
-            "Thread resolution sidecar check failed; falling back to full resolution",
-            room_id=room_id,
-            thread_id=thread_id,
-            error=str(exc),
-        )
-        return False
-    return current_texts == snapshot.sidecar_texts
-
-
-async def _try_merge_cached_thread_delta(
-    client: nio.AsyncClient,
-    *,
-    room_id: str,
-    thread_id: str,
-    event_cache: ConversationEventCache,
-    revision: ThreadRevision,
-    membership_epoch: int,
-    trusted_sender_ids: Collection[str],
-    resolution_reuse: ThreadResolutionReuseCache,
-    snapshot: ThreadResolutionSnapshot,
-    snapshot_trusted_sender_ids: frozenset[str],
-) -> tuple[list[ResolvedVisibleMessage], float, str] | None:
-    """Load and merge one complete append-only durable delta."""
-    if (
-        revision.max_write_seq <= snapshot.revision.max_write_seq
-        and revision.max_thread_write_seq <= snapshot.revision.max_thread_write_seq
-    ):
-        return None
-    try:
-        candidate_suffix = await event_cache.get_thread_events_written_between(
-            room_id,
-            thread_id,
-            after_write_seq=snapshot.revision.max_write_seq,
-            through_write_seq=revision.max_write_seq,
-            after_thread_write_seq=snapshot.revision.max_thread_write_seq,
-            through_thread_write_seq=revision.max_thread_write_seq,
-        )
-    except Exception as exc:
-        logger.debug(
-            "Thread resolution delta read failed; falling back to full resolution",
-            room_id=room_id,
-            thread_id=thread_id,
-            error=str(exc),
-        )
-        return None
-    suffix = reusable_event_source_suffix(
-        snapshot,
-        candidate_suffix,
-        trusted_sender_ids=snapshot_trusted_sender_ids,
-        membership_epoch=membership_epoch,
-        revision=revision,
-    )
-    if suffix is None:
-        return None
-    return await _resolve_reused_thread_suffix(
-        client,
-        room_id=room_id,
-        thread_id=thread_id,
-        event_cache=event_cache,
-        snapshot=snapshot,
-        suffix=suffix,
-        revision=revision,
-        expected_membership_epoch=membership_epoch,
-        trusted_sender_ids=trusted_sender_ids,
-        resolution_reuse=resolution_reuse,
-    )
-
-
 async def _load_cached_thread_history_if_usable(
     client: nio.AsyncClient,
     *,
@@ -955,7 +687,6 @@ async def _load_cached_thread_history_if_usable(
     event_cache: ConversationEventCache,
     hydrate_sidecars: bool,
     trusted_sender_ids: Collection[str] = (),
-    resolution_reuse: ThreadResolutionReuseCache | None = None,
 ) -> tuple[ThreadHistoryResult | None, dict[str, str | int | float | bool] | None]:
     """Return a durable thread snapshot when the current runtime may safely trust it."""
     cached_membership_epoch = await _capture_membership_epoch(event_cache, room_id)
@@ -975,67 +706,41 @@ async def _load_cached_thread_history_if_usable(
         return None, cache_reject_diagnostics
 
     resolution_started = time.perf_counter()
-    cache_read_ms = 0.0
-    resolved_history: list[ResolvedVisibleMessage] | None = None
-    sidecar_hydration_ms = 0.0
-    resolution_reuse_kind = "full"
-    # Reuse only applies to fully hydrated reads: snapshot-mode bodies are intentionally degraded
-    # and must never be frozen into (or served from) a reusable resolution.
-    reuse_cache = resolution_reuse if hydrate_sidecars else None
-    revision = None if reuse_cache is None else await event_cache.get_thread_revision(room_id, thread_id)
-    reused = await _try_reuse_cached_thread_resolution(
+    cache_read_started = time.perf_counter()
+    cached_event_sources = await event_cache.get_thread_events(room_id, thread_id)
+    cache_read_ms = elapsed_ms_since(cache_read_started, clock=time.perf_counter)
+    if cached_event_sources is None:
+        return None, {THREAD_HISTORY_CACHE_REJECT_REASON_DIAGNOSTIC: "cache_rows_missing"}
+    cached_rejection_reason = _thread_history_cache_rejection_reason(cached_event_sources, thread_id=thread_id)
+    if cached_rejection_reason is not None:
+        await _invalidate_thread_cache_entry(event_cache, room_id=room_id, thread_id=thread_id)
+        payload_reject_diagnostics: dict[str, str | int | float | bool] = {
+            THREAD_HISTORY_CACHE_REJECT_REASON_DIAGNOSTIC: f"cache_{cached_rejection_reason}",
+        }
+        logger.info(
+            "Thread cache rejected for read",
+            room_id=room_id,
+            thread_id=thread_id,
+            **payload_reject_diagnostics,
+        )
+        return None, payload_reject_diagnostics
+
+    resolved_history, sidecar_hydration_ms = await _resolve_cached_thread_history(
         client,
         room_id=room_id,
         thread_id=thread_id,
         event_cache=event_cache,
-        revision=revision,
-        membership_epoch=cached_membership_epoch,
+        cached_event_sources=cached_event_sources,
+        hydrate_sidecars=hydrate_sidecars,
+        expected_membership_epoch=cached_membership_epoch,
         trusted_sender_ids=trusted_sender_ids,
-        resolution_reuse=reuse_cache,
     )
-    if reused is not None:
-        resolved_history, sidecar_hydration_ms, resolution_reuse_kind = reused
-
     if resolved_history is None:
-        cache_read_started = time.perf_counter()
-        cached_event_sources = await event_cache.get_thread_events(room_id, thread_id)
-        cache_read_ms = elapsed_ms_since(cache_read_started, clock=time.perf_counter)
-        if cached_event_sources is None:
-            cache_reject_diagnostics: dict[str, str | int | float | bool] = {
-                THREAD_HISTORY_CACHE_REJECT_REASON_DIAGNOSTIC: "cache_rows_missing",
-            }
-            return None, cache_reject_diagnostics
-        cached_rejection_reason = _thread_history_cache_rejection_reason(cached_event_sources, thread_id=thread_id)
-        if cached_rejection_reason is not None:
-            await _invalidate_thread_cache_entry(event_cache, room_id=room_id, thread_id=thread_id)
-            payload_reject_diagnostics: dict[str, str | int | float | bool] = {
-                THREAD_HISTORY_CACHE_REJECT_REASON_DIAGNOSTIC: f"cache_{cached_rejection_reason}",
-            }
-            logger.info(
-                "Thread cache rejected for read",
-                room_id=room_id,
-                thread_id=thread_id,
-                **payload_reject_diagnostics,
-            )
-            return None, payload_reject_diagnostics
+        return None, {THREAD_HISTORY_CACHE_REJECT_REASON_DIAGNOSTIC: "cache_payload_unresolvable"}
 
-        resolved_history, sidecar_hydration_ms = await _resolve_cached_thread_history(
-            client,
-            room_id=room_id,
-            thread_id=thread_id,
-            event_cache=event_cache,
-            cached_event_sources=cached_event_sources,
-            hydrate_sidecars=hydrate_sidecars,
-            expected_membership_epoch=cached_membership_epoch,
-            trusted_sender_ids=trusted_sender_ids,
-            resolution_reuse=reuse_cache,
-            revision=revision,
-        )
-    if resolved_history is None:
-        return None, {
-            THREAD_HISTORY_CACHE_REJECT_REASON_DIAGNOSTIC: "cache_payload_unresolvable",
-        }
-
+    # A window that left messages out is not full history, whatever its sidecars did. Callers gate
+    # completeness-dependent planning and the model-history refresh on this flag, so claiming a
+    # truncated tail is complete silently drops older participants and mentions from the context.
     return _thread_history_result(
         resolved_history,
         is_full_history=hydrate_sidecars,
@@ -1043,7 +748,6 @@ async def _load_cached_thread_history_if_usable(
             "cache_read_ms": cache_read_ms,
             "resolution_ms": elapsed_ms_since(resolution_started, clock=time.perf_counter),
             "sidecar_hydration_ms": sidecar_hydration_ms,
-            "thread_resolution_reuse": resolution_reuse_kind,
             THREAD_HISTORY_SOURCE_DIAGNOSTIC: THREAD_HISTORY_SOURCE_CACHE,
         },
     ), None
@@ -1610,7 +1314,6 @@ async def _fetch_thread_history_with_cache_policy(
     trusted_sender_ids: Collection[str] = (),
     caller_label: str = "unknown",
     coordinator_queue_wait_ms: float = 0.0,
-    resolution_reuse: ThreadResolutionReuseCache | None = None,
     refill: _ThreadHistoryRefill | None = None,
 ) -> ThreadHistoryResult:
     """Serve one trusted cache hit or delegate only the required refill."""
@@ -1624,7 +1327,6 @@ async def _fetch_thread_history_with_cache_policy(
             event_cache=event_cache,
             hydrate_sidecars=hydrate_sidecars,
             trusted_sender_ids=trusted_sender_ids,
-            resolution_reuse=resolution_reuse,
         )
     except Exception as exc:
         logger.warning(
@@ -1668,10 +1370,14 @@ async def fetch_thread_history(
     trusted_sender_ids: Collection[str] = (),
     caller_label: str = "unknown",
     coordinator_queue_wait_ms: float = 0.0,
-    resolution_reuse: ThreadResolutionReuseCache | None = None,
     refill: _ThreadHistoryRefill | None = None,
 ) -> ThreadHistoryResult:
-    """Fetch all messages in a thread, allowing advisory stale fallback."""
+    """Fetch all messages in a thread, allowing advisory stale fallback.
+
+    Cached reads are collapsed but never truncated, so a caller whose output is the history
+    itself - export, and anything else that must be complete rather than recent - gets every
+    message. ``is_full_history`` still reports false when sidecar hydration was skipped.
+    """
     return await _fetch_thread_history_with_cache_policy(
         client,
         room_id,
@@ -1683,7 +1389,6 @@ async def fetch_thread_history(
         trusted_sender_ids=trusted_sender_ids,
         caller_label=caller_label,
         coordinator_queue_wait_ms=coordinator_queue_wait_ms,
-        resolution_reuse=resolution_reuse,
         refill=refill,
     )
 
@@ -1697,7 +1402,6 @@ async def fetch_dispatch_thread_history(
     trusted_sender_ids: Collection[str] = (),
     caller_label: str = "unknown",
     coordinator_queue_wait_ms: float = 0.0,
-    resolution_reuse: ThreadResolutionReuseCache | None = None,
     refill: _ThreadHistoryRefill | None = None,
 ) -> ThreadHistoryResult:
     """Fetch strict full thread history from trusted cache or a fresh refill."""
@@ -1712,7 +1416,6 @@ async def fetch_dispatch_thread_history(
         trusted_sender_ids=trusted_sender_ids,
         caller_label=caller_label,
         coordinator_queue_wait_ms=coordinator_queue_wait_ms,
-        resolution_reuse=resolution_reuse,
         refill=refill,
     )
 
@@ -1726,7 +1429,6 @@ async def fetch_dispatch_thread_snapshot(
     trusted_sender_ids: Collection[str] = (),
     caller_label: str = "unknown",
     coordinator_queue_wait_ms: float = 0.0,
-    resolution_reuse: ThreadResolutionReuseCache | None = None,
     refill: _ThreadHistoryRefill | None = None,
 ) -> ThreadHistoryResult:
     """Fetch strict lightweight dispatch context from trusted cache or a fresh refill."""
@@ -1741,7 +1443,6 @@ async def fetch_dispatch_thread_snapshot(
         trusted_sender_ids=trusted_sender_ids,
         caller_label=caller_label,
         coordinator_queue_wait_ms=coordinator_queue_wait_ms,
-        resolution_reuse=resolution_reuse,
         refill=refill,
     )
 
@@ -1793,7 +1494,7 @@ def _is_opaque_thread_affecting_event_source(event_source: Mapping[str, Any]) ->
 def _record_scanned_room_message_source(
     event: nio.Event,
     *,
-    latest_edits_by_original_event_id: dict[str, tuple[nio.RoomMessageText | nio.RoomMessageNotice, str | None]],
+    edit_candidates: ThreadEditCandidates,
     scanned_message_sources: dict[str, dict[str, Any]],
 ) -> str | None:
     """Record one scanned room-message source and return the recorded event ID."""
@@ -1807,10 +1508,9 @@ def _record_scanned_room_message_source(
         return None
 
     event_info = EventInfo.from_event(event.source)
-    if isinstance(event, _VISIBLE_ROOM_MESSAGE_EVENT_TYPES) and record_latest_thread_edit(
+    if isinstance(event, _VISIBLE_ROOM_MESSAGE_EVENT_TYPES) and edit_candidates.record(
         event,
         event_info=event_info,
-        latest_edits_by_original_event_id=latest_edits_by_original_event_id,
     ):
         return None
     if event_info.is_edit:
@@ -1903,12 +1603,20 @@ async def _unresolved_opaque_relation_event_ids(
     return frozenset(unresolved_event_ids)
 
 
+def _scanned_event_sender(event_source: dict[str, Any] | None) -> str | None:
+    """Return one scanned event's sender, or None when the event was never scanned."""
+    if event_source is None:
+        return None
+    sender = event_source.get("sender")
+    return sender if isinstance(sender, str) else None
+
+
 async def _group_scanned_sources_by_thread(
     *,
     room_id: str,
     thread_root_ids: Collection[str],
     scanned_message_sources: dict[str, dict[str, Any]],
-    latest_edits_by_original_event_id: dict[str, tuple[nio.RoomMessageText | nio.RoomMessageNotice, str | None]],
+    edit_candidates: ThreadEditCandidates,
 ) -> tuple[dict[str, list[dict[str, Any]]], frozenset[str]]:
     """Bucket room-scan sources per requested thread and report unresolved opaque relations."""
     grouped: dict[str, dict[str, dict[str, Any]]] = {
@@ -1944,7 +1652,14 @@ async def _group_scanned_sources_by_thread(
     )
 
     edits_by_root: dict[str, list[dict[str, Any]]] = {}
-    for original_event_id, (edit_event, edit_thread_id) in latest_edits_by_original_event_id.items():
+    for original_event_id in edit_candidates.original_event_ids():
+        winner = edit_candidates.winner_for(
+            original_event_id,
+            sender=_scanned_event_sender(scanned_message_sources.get(original_event_id)),
+        )
+        if winner is None:
+            continue
+        edit_event, edit_thread_id = winner
         target_roots = {
             root_id
             for root_id in (original_event_id, resolved_thread_ids.get(original_event_id), edit_thread_id)
@@ -1974,7 +1689,7 @@ async def _bulk_scan_thread_event_sources(
     if max_scan_pages is not None and max_scan_pages < 1:
         msg = "max_scan_pages must be at least 1"
         raise ValueError(msg)
-    latest_edits_by_original_event_id: dict[str, tuple[nio.RoomMessageText | nio.RoomMessageNotice, str | None]] = {}
+    edit_candidates = ThreadEditCandidates()
     scanned_message_sources: dict[str, dict[str, Any]] = {}
     remaining_root_ids = set(thread_root_ids)
     from_token: str | None = None
@@ -2006,7 +1721,7 @@ async def _bulk_scan_thread_event_sources(
             scanned_event_count += 1
             recorded_event_id = _record_scanned_room_message_source(
                 event,
-                latest_edits_by_original_event_id=latest_edits_by_original_event_id,
+                edit_candidates=edit_candidates,
                 scanned_message_sources=scanned_message_sources,
             )
             if recorded_event_id is not None:
@@ -2019,7 +1734,7 @@ async def _bulk_scan_thread_event_sources(
         room_id=room_id,
         thread_root_ids=thread_root_ids,
         scanned_message_sources=scanned_message_sources,
-        latest_edits_by_original_event_id=latest_edits_by_original_event_id,
+        edit_candidates=edit_candidates,
     )
     return _BulkThreadScanResult(
         thread_event_sources=thread_event_sources,

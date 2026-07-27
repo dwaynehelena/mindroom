@@ -60,13 +60,144 @@ from .thread_cache_state import (
     is_incremental_thread_revalidation_reason,
     thread_cache_state_changed_after,
     thread_cache_state_row,
-    thread_revision_row,
 )
 
 if TYPE_CHECKING:
     import aiosqlite
 
-    from .event_cache import ThreadCacheState, ThreadRevision
+    from .event_cache import ThreadCacheState
+
+# The edits that survive a collapsed read: one per message, from the right sender.
+#
+# A thread stores every edit ever sent. Returning them all makes the caller's fold re-derive per
+# message what one window function derives once, and hauls the whole superseded history across
+# the wire to do it.
+#
+# Measured on a representative agent workload: edits are 53% of all event rows, 6.30 per edited
+# original, max 170 on one original, and one thread is 94.5% edits. Threads themselves are
+# small - p50 9 rows, max 538.
+#
+# So be precise about what this buys, because two earlier revisions of this comment were not. It
+# does not reduce writes - it is a read-side query, and every edit is still stored. It does not
+# change what the fold produces either; the fold already picked one edit per message. What it buys
+# is fewer rows off disk and over the wire, and less fold work, on a median thread of nine rows -
+# paid for with a window function and three joins on every read. The correctness fixes that came
+# with it are the substantial part. The slowest measured read was 126.6 ms warm, so no speedup
+# is claimed, and the 2,021-row thread quoted here before was this repository's synthetic
+# fixture (20 messages x 100 edits), not a real one.
+#
+# The root fix is upstream of this query: prune superseded edits at write time and there is nothing
+# to collapse. Retention is deliberate rather than accidental, so that is a trade - redacting the
+# current winning edit is contractually supposed to reveal the previous one, which only works while
+# the older rows exist (``test_redacting_latest_edit_falls_back_to_previous_cached_edit``). The
+# trade looks sound because the case is close to unreachable: redacting a MESSAGE already removes
+# the original and every dependent edit together, and mindroom-cinny's delete targets the original
+# event ID - ``MessageDeleteItem`` passes ``mEvent.getId()``, and a replacement is only ever reached
+# through ``replacingEvent()``, which is never a redaction target there. Reaching the rollback path
+# needs the raw API, ``/redact <edit-event-id>``, or moderation tooling. Element was not checked.
+#
+# The contract to implement, if it is built: keep only the current legitimate edit per (original,
+# sender); redacting an already-pruned edit tombstones it and is otherwise a no-op; redacting the
+# retained winner deletes it, marks the thread stale and refetches full history, which
+# ``invalidate_after_redaction`` in ``thread_writes`` already does on the live redaction path; if
+# the homeserver is unreachable at that moment, fail or degrade explicitly rather than serving the
+# pre-edit body as confirmed history; and keep tombstones, so out-of-order sync cannot resurrect a
+# deleted edit.
+#
+# "Surviving" is per (original, sender): a replacement is only legitimate from the sender of the
+# event it replaces, so keeping a single newest-overall edit lets any room member starve the fold
+# of the author's own and pin the message at its pre-edit body. Membership is joined in here rather
+# than filtered later, because ranking over edits the outer query will discard lets an
+# out-of-thread edit suppress the in-thread runner-up.
+#
+# The sender comparison here is an optimization, not the security boundary. The fold re-checks
+# every candidate against the JSON sender (``ThreadEditCandidates.winner_for``), so if this
+# filter ever admits a foreign replacement the fold still finds nothing in the author's bucket
+# and renders the pre-edit body - wrong, but not the attacker's text. Doing it in SQL keeps a
+# foreign edit from being ranked as the survivor and hiding the author's own.
+#
+# The original is LEFT joined, not required. An edit can outlive the message it replaces -
+# ``event_edits`` holds no foreign key to ``events`` - and the fold synthesizes a message from such
+# an edit rather than dropping it, carrying the editor's own sender because an original nobody has
+# seen cannot be impersonated. Requiring the original would delete those messages from the read
+# outright. The sender filter is skipped exactly when there is no original to compare against,
+# which is also when ``winner_for`` stops applying it, for the same reason.
+#
+# The original is read out of ``events`` alone, with no thread membership required. Two narrower
+# lookups were tried first and both silently disabled the filter. Scoping it to this thread made an
+# original cached in a sibling thread read as absent. Routing it through ``thread_events`` at all
+# then did the same to any original cached by a point lookup, because ``store_event`` writes the
+# payload with no membership row - so ``original_events`` came back NULL, the sender filter was
+# skipped, and the newest edit across all senders won, which is the exact suppression this filter
+# exists to prevent (``test_a_point_cached_original_still_scopes_edits_to_its_sender``). The
+# comparison needs the payload and nothing else, so asking for more can only lose a sender it could
+# have compared against.
+#
+# ROW_NUMBER over one pass rather than a correlated NOT EXISTS per candidate: 5.3 ms against
+# 8.7 ms on a synthetic 2,021-event thread with current table statistics. Policy stays in Python; this is
+# only "latest per group", which is what a window function is for. Splitting present-original and
+# absent-original edits into two CTEs scans ``event_edits`` twice and timed out a 2,000-edit
+# PostgreSQL test that one pass completes.
+#
+# MATERIALIZED is a hint, not a correctness requirement: measured 3.7 ms materialized against
+# 4.1 ms inlinable. It is kept only to stop the planner re-deriving the survivors per row.
+_SURVIVING_EDITS_CTE = """
+WITH surviving_edits AS MATERIALIZED (
+    SELECT edit_event_id
+    FROM (
+        SELECT event_edits.edit_event_id AS edit_event_id,
+               ROW_NUMBER() OVER (
+                   PARTITION BY event_edits.original_event_id
+                   ORDER BY event_edits.origin_server_ts DESC, event_edits.edit_event_id DESC
+               ) AS edit_rank
+        FROM event_edits
+        JOIN thread_events AS edit_membership
+            ON edit_membership.principal_id = event_edits.principal_id
+            AND edit_membership.room_id = event_edits.room_id
+            AND edit_membership.event_id = event_edits.edit_event_id
+            AND edit_membership.thread_id = :thread_id
+        JOIN events AS edit_events
+            ON edit_events.principal_id = event_edits.principal_id
+            AND edit_events.room_id = event_edits.room_id
+            AND edit_events.event_id = event_edits.edit_event_id
+        LEFT JOIN events AS original_events
+            ON original_events.principal_id = event_edits.principal_id
+            AND original_events.room_id = event_edits.room_id
+            AND original_events.event_id = event_edits.original_event_id
+        WHERE event_edits.principal_id = :principal_id
+            AND event_edits.room_id = :room_id
+            AND (original_events.event_id IS NULL OR edit_events.sender = original_events.sender)
+    )
+    WHERE edit_rank = 1
+)
+"""
+
+# One thread, collapsed: every non-edit row, plus the one surviving edit per edited message.
+_THREAD_EVENTS_SQL = (
+    _SURVIVING_EDITS_CTE  # noqa: S608 - both operands are literals; params stay bound
+    + """
+SELECT thread_events.origin_server_ts, thread_events.write_seq, events.event_json
+FROM thread_events
+JOIN events
+    ON events.principal_id = thread_events.principal_id
+    AND events.room_id = thread_events.room_id
+    AND events.event_id = thread_events.event_id
+WHERE thread_events.principal_id = :principal_id
+    AND thread_events.room_id = :room_id
+    AND thread_events.thread_id = :thread_id
+    AND (
+        NOT EXISTS (
+            SELECT 1
+            FROM event_edits AS row_is_an_edit
+            WHERE row_is_an_edit.principal_id = thread_events.principal_id
+                AND row_is_an_edit.room_id = thread_events.room_id
+                AND row_is_an_edit.edit_event_id = thread_events.event_id
+        )
+        OR thread_events.event_id IN (SELECT edit_event_id FROM surviving_edits)
+    )
+ORDER BY thread_events.origin_server_ts ASC, thread_events.write_seq ASC
+"""
+)
 
 
 async def load_thread_events(
@@ -76,102 +207,51 @@ async def load_thread_events(
     room_id: str,
     thread_id: str,
 ) -> list[dict[str, Any]] | None:
-    """Return cached events for one thread sorted by timestamp."""
+    """Return one thread's cached events oldest first, collapsed to one edit per message."""
     cursor = await db.execute(
-        """
-        SELECT thread_events.origin_server_ts, thread_events.write_seq, events.event_json
-        FROM thread_events
-        JOIN events
-            ON events.principal_id = thread_events.principal_id
-            AND events.room_id = thread_events.room_id
-            AND events.event_id = thread_events.event_id
-        WHERE thread_events.principal_id = ?
-            AND thread_events.room_id = ?
-            AND thread_events.thread_id = ?
-        ORDER BY thread_events.origin_server_ts ASC, thread_events.write_seq ASC
-        """,
-        (principal_id, room_id, thread_id),
+        _THREAD_EVENTS_SQL,
+        {"principal_id": principal_id, "room_id": room_id, "thread_id": thread_id},
     )
     rows = await cursor.fetchall()
     await cursor.close()
-    if not rows:
-        return None
-    return [json.loads(row[2]) for row in rows]
+    return [json.loads(row[2]) for row in rows] if rows else None
 
 
-async def load_thread_events_written_between(
+async def load_thread_event_ids(
     db: aiosqlite.Connection,
     *,
     principal_id: str,
     room_id: str,
     thread_id: str,
-    after_write_seq: int,
-    through_write_seq: int,
-    after_thread_write_seq: int,
-    through_thread_write_seq: int,
-) -> list[dict[str, Any]]:
-    """Return cached thread events changed in bounded durable revision intervals."""
+) -> set[str]:
+    """Return every raw event ID this thread holds, superseded edits included.
+
+    Repair bookkeeping asks which rows are durably present; the visible read answers what the
+    thread looks like. Collapsing made those different questions, and answering the first with the
+    second reports every superseded edit as missing. A retained delta for such an edit can then
+    never reconcile, so the read invalidates the thread it just served - on the paths where an
+    append does not converge and its delta is deliberately kept.
+
+    Joined to ``events`` rather than reading membership alone: a membership row whose payload is
+    gone is not durably present, and reporting it as present would suppress a refill that should
+    happen. That join is also what the pre-collapse code did implicitly, since it derived these IDs
+    from a read that required the payload.
+    """
     cursor = await db.execute(
         """
-        SELECT thread_events.origin_server_ts, thread_events.write_seq, events.event_json
+        SELECT thread_events.event_id
         FROM thread_events
         JOIN events
             ON events.principal_id = thread_events.principal_id
             AND events.room_id = thread_events.room_id
             AND events.event_id = thread_events.event_id
-        WHERE thread_events.principal_id = ?
-            AND thread_events.room_id = ?
-            AND thread_events.thread_id = ?
-            AND (
-                (events.write_seq > ? AND events.write_seq <= ?)
-                OR (thread_events.write_seq > ? AND thread_events.write_seq <= ?)
-            )
-        ORDER BY thread_events.origin_server_ts ASC, thread_events.write_seq ASC
-        """,
-        (
-            principal_id,
-            room_id,
-            thread_id,
-            after_write_seq,
-            through_write_seq,
-            after_thread_write_seq,
-            through_thread_write_seq,
-        ),
-    )
-    rows = await cursor.fetchall()
-    await cursor.close()
-    return [json.loads(row[2]) for row in rows]
-
-
-async def load_thread_revision(
-    db: aiosqlite.Connection,
-    *,
-    principal_id: str,
-    room_id: str,
-    thread_id: str,
-) -> ThreadRevision | None:
-    """Return the durable revision identity of one non-empty cached thread."""
-    cursor = await db.execute(
-        """
-        SELECT
-            COUNT(*),
-            MAX(events.write_seq),
-            MAX(thread_events.write_seq),
-            MAX(thread_events.origin_server_ts)
-        FROM thread_events
-        JOIN events
-            ON events.principal_id = thread_events.principal_id
-            AND events.room_id = thread_events.room_id
-            AND events.event_id = thread_events.event_id
-        WHERE thread_events.principal_id = ?
-            AND thread_events.room_id = ?
-            AND thread_events.thread_id = ?
+        WHERE thread_events.principal_id = ? AND thread_events.room_id = ? AND thread_events.thread_id = ?
         """,
         (principal_id, room_id, thread_id),
     )
-    row = await cursor.fetchone()
+    rows = await cursor.fetchall()
     await cursor.close()
-    return thread_revision_row(row)
+    return {str(row[0]) for row in rows}
 
 
 async def load_recent_room_thread_ids(

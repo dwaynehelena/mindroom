@@ -31,13 +31,109 @@ from .thread_cache_state import (
     is_incremental_thread_revalidation_reason,
     thread_cache_state_changed_after,
     thread_cache_state_row,
-    thread_revision_row,
 )
 
 if TYPE_CHECKING:
     from psycopg import AsyncConnection
 
-    from .event_cache import ThreadCacheState, ThreadRevision
+    from .event_cache import ThreadCacheState
+
+# The edits that survive a collapsed read: one per message, from the right sender.
+#
+# This query mirrors the SQLite one. What it selects and why - the per (original, sender) rule, why
+# the sender comparison here is an optimization rather than the security boundary, why the original
+# is LEFT joined out of ``events`` alone, why ROW_NUMBER rather than a correlated NOT EXISTS, why
+# MATERIALIZED, and what a write-time prune would have to preserve - is recorded once above
+# ``_SURVIVING_EDITS_CTE``
+# in sqlite_event_cache_threads.py. Only the PostgreSQL-specific notes live here; keep it that way,
+# because the two copies had already drifted when this was last deduplicated.
+#
+# Do not rewrite the ranking as ``DISTINCT ON (original_event_id)``: that shape materialises every
+# row of the thread before it can pick winners.
+#
+# Do not re-derive this query's cost without ANALYZE. On unanalyzed tables an unseen namespace
+# estimates 1 row against thousands actual, every join degrades to a nested loop with a join filter,
+# and every shape collapses - a plain unfiltered read of the same thread included, by 77x. A
+# comparison made in that state measures the planner, not the query.
+#
+# ``COLLATE "C"`` is load-bearing, not decoration. The tie-break has to agree with SQLite and
+# with the fold, and both compare event IDs by byte: SQLite TEXT comparison is always BINARY and
+# ``_edit_candidate_is_newer`` compares Python strings by code point. Without the override this
+# ORDER BY uses the database's default collation, so on a glibc cluster ('a' < 'B') the read
+# ships a different surviving edit than SQLite does for the same two edits sharing a timestamp -
+# and the fold applies whichever single edit it is handed, so the message renders differently per
+# backend. Matrix v4+ event IDs are mixed-case base64url, the input where the two orders diverge
+# most.
+#
+# It is nearly free, not free. A different collation is a different OID, so this ORDER BY no
+# longer matches idx_..._event_edits_room_original_ts and the plan gains an Incremental Sort
+# above it - on a C-collation database too, since "C" (950) is not the default OID (100) even
+# when datcollate is C. The presorted prefix survives, so the residual sort covers one
+# (original, timestamp) group, which is a single row outside the tie this exists to fix.
+# Measured end to end on a 540-row 94%-edit thread: 11.8 ms with, 10.7 ms without.
+#
+# The behavioural divergence is invisible to CI: the fixture pins postgres:15-alpine and musl
+# has no real locale support, so every libc collation there behaves like C and a seeded read
+# cannot fail whether or not this pin is present. test_edit_ranking_is_scoped_to_this_thread
+# _and_this_sender therefore asserts the pin structurally, which is what can actually fail.
+_SURVIVING_EDITS_CTE = """
+WITH surviving_edits AS MATERIALIZED (
+    SELECT edit_event_id
+    FROM (
+        SELECT event_edits.edit_event_id AS edit_event_id,
+               ROW_NUMBER() OVER (
+                   PARTITION BY event_edits.original_event_id
+                   ORDER BY event_edits.origin_server_ts DESC,
+                            event_edits.edit_event_id COLLATE "C" DESC
+               ) AS edit_rank
+        FROM mindroom_event_cache_event_edits AS event_edits
+        JOIN mindroom_event_cache_thread_events AS edit_membership
+            ON edit_membership.namespace = event_edits.namespace
+            AND edit_membership.room_id = event_edits.room_id
+            AND edit_membership.event_id = event_edits.edit_event_id
+            AND edit_membership.thread_id = %(thread_id)s
+        JOIN mindroom_event_cache_events AS edit_events
+            ON edit_events.namespace = event_edits.namespace
+            AND edit_events.room_id = event_edits.room_id
+            AND edit_events.event_id = event_edits.edit_event_id
+        LEFT JOIN mindroom_event_cache_events AS original_events
+            ON original_events.namespace = event_edits.namespace
+            AND original_events.room_id = event_edits.room_id
+            AND original_events.event_id = event_edits.original_event_id
+        WHERE event_edits.namespace = %(namespace)s
+            AND event_edits.room_id = %(room_id)s
+            AND (original_events.event_id IS NULL OR edit_events.sender = original_events.sender)
+    ) AS ranked
+    WHERE edit_rank = 1
+)
+"""
+
+# One thread, collapsed: every non-edit row, plus the one surviving edit per edited message.
+_THREAD_EVENTS_SQL = (
+    _SURVIVING_EDITS_CTE  # noqa: S608 - both operands are literals; params stay bound
+    + """
+SELECT thread_events.origin_server_ts, thread_events.write_seq, events.event_json
+FROM mindroom_event_cache_thread_events AS thread_events
+JOIN mindroom_event_cache_events AS events
+    ON events.namespace = thread_events.namespace
+    AND events.room_id = thread_events.room_id
+    AND events.event_id = thread_events.event_id
+WHERE thread_events.namespace = %(namespace)s
+    AND thread_events.room_id = %(room_id)s
+    AND thread_events.thread_id = %(thread_id)s
+    AND (
+        NOT EXISTS (
+            SELECT 1
+            FROM mindroom_event_cache_event_edits AS row_is_an_edit
+            WHERE row_is_an_edit.namespace = thread_events.namespace
+                AND row_is_an_edit.room_id = thread_events.room_id
+                AND row_is_an_edit.edit_event_id = thread_events.event_id
+        )
+        OR thread_events.event_id IN (SELECT edit_event_id FROM surviving_edits)
+    )
+ORDER BY thread_events.origin_server_ts ASC, thread_events.write_seq ASC
+"""
+)
 
 
 async def load_thread_events(
@@ -47,99 +143,49 @@ async def load_thread_events(
     room_id: str,
     thread_id: str,
 ) -> list[dict[str, Any]] | None:
-    """Return cached events for one thread sorted by timestamp."""
+    """Return one thread's cached events oldest first, collapsed to one edit per message."""
     rows = await fetchall(
         db,
-        """
-        SELECT thread_events.origin_server_ts, thread_events.write_seq, events.event_json
-        FROM mindroom_event_cache_thread_events AS thread_events
-        JOIN mindroom_event_cache_events AS events
-            ON events.namespace = thread_events.namespace
-            AND events.room_id = thread_events.room_id
-            AND events.event_id = thread_events.event_id
-        WHERE thread_events.namespace = %s
-            AND thread_events.room_id = %s
-            AND thread_events.thread_id = %s
-        ORDER BY thread_events.origin_server_ts ASC, thread_events.write_seq ASC
-        """,
-        (namespace, room_id, thread_id),
+        _THREAD_EVENTS_SQL,
+        {"namespace": namespace, "room_id": room_id, "thread_id": thread_id},
     )
-    if not rows:
-        return None
-    return [json.loads(row[2]) for row in rows]
+    return [json.loads(row[2]) for row in rows] if rows else None
 
 
-async def load_thread_events_written_between(
+async def load_thread_event_ids(
     db: AsyncConnection,
     *,
     namespace: str,
     room_id: str,
     thread_id: str,
-    after_write_seq: int,
-    through_write_seq: int,
-    after_thread_write_seq: int,
-    through_thread_write_seq: int,
-) -> list[dict[str, Any]]:
-    """Return cached thread events changed in bounded durable revision intervals."""
+) -> set[str]:
+    """Return every raw event ID this thread holds, superseded edits included.
+
+    Repair bookkeeping asks which rows are durably present; the visible read answers what the
+    thread looks like. Collapsing made those different questions, and answering the first with the
+    second reports every superseded edit as missing. A retained delta for such an edit can then
+    never reconcile, so the read invalidates the thread it just served - on the paths where an
+    append does not converge and its delta is deliberately kept.
+
+    Joined to ``events`` rather than reading membership alone: a membership row whose payload is
+    gone is not durably present, and reporting it as present would suppress a refill that should
+    happen. That join is also what the pre-collapse code did implicitly, since it derived these IDs
+    from a read that required the payload.
+    """
     rows = await fetchall(
         db,
         """
-        SELECT thread_events.origin_server_ts, thread_events.write_seq, events.event_json
+        SELECT thread_events.event_id
         FROM mindroom_event_cache_thread_events AS thread_events
         JOIN mindroom_event_cache_events AS events
             ON events.namespace = thread_events.namespace
             AND events.room_id = thread_events.room_id
             AND events.event_id = thread_events.event_id
-        WHERE thread_events.namespace = %s
-            AND thread_events.room_id = %s
-            AND thread_events.thread_id = %s
-            AND (
-                (events.write_seq > %s AND events.write_seq <= %s)
-                OR (thread_events.write_seq > %s AND thread_events.write_seq <= %s)
-            )
-        ORDER BY thread_events.origin_server_ts ASC, thread_events.write_seq ASC
-        """,
-        (
-            namespace,
-            room_id,
-            thread_id,
-            after_write_seq,
-            through_write_seq,
-            after_thread_write_seq,
-            through_thread_write_seq,
-        ),
-    )
-    return [json.loads(row[2]) for row in rows]
-
-
-async def load_thread_revision(
-    db: AsyncConnection,
-    *,
-    namespace: str,
-    room_id: str,
-    thread_id: str,
-) -> ThreadRevision | None:
-    """Return the durable revision identity of one non-empty cached thread."""
-    row = await fetchone(
-        db,
-        """
-        SELECT
-            COUNT(*),
-            MAX(events.write_seq),
-            MAX(thread_events.write_seq),
-            MAX(thread_events.origin_server_ts)
-        FROM mindroom_event_cache_thread_events AS thread_events
-        JOIN mindroom_event_cache_events AS events
-            ON events.namespace = thread_events.namespace
-            AND events.room_id = thread_events.room_id
-            AND events.event_id = thread_events.event_id
-        WHERE thread_events.namespace = %s
-            AND thread_events.room_id = %s
-            AND thread_events.thread_id = %s
+        WHERE thread_events.namespace = %s AND thread_events.room_id = %s AND thread_events.thread_id = %s
         """,
         (namespace, room_id, thread_id),
     )
-    return thread_revision_row(row)
+    return {str(row[0]) for row in rows}
 
 
 async def load_recent_room_thread_ids(
