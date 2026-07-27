@@ -86,8 +86,8 @@ class OperationKind(StrEnum):
     REPLACE_THREAD = "replace_thread"
     STALE_REPLACE_THREAD = "stale_replace_thread"
     INVALIDATE_THREAD = "invalidate_thread"
-    MARK_THREAD_STALE = "mark_thread_gap"
-    MARK_ROOM_STALE = "mark_room_stale"
+    MARK_THREAD_GAP = "mark_thread_gap"
+    MARK_ROOM_GAP = "mark_room_gap"
     LIMITED_SYNC = "limited_sync"
 
 
@@ -109,8 +109,9 @@ class FuzzOperation:
         if not isinstance(raw_kind, str):
             msg = "Matrix cache fuzz operation kind must be a string"
             raise TypeError(msg)
+        kind = OperationKind.MARK_ROOM_GAP if raw_kind == "mark_room_stale" else OperationKind(raw_kind)
         return cls(
-            kind=OperationKind(raw_kind),
+            kind=kind,
             room=_required_int(value, "room"),
             thread=_required_int(value, "thread"),
             slot=_required_int(value, "slot"),
@@ -590,8 +591,8 @@ class CacheFuzzRunner:
             OperationKind.REPLACE_THREAD: self._apply_thread_replacement,
             OperationKind.STALE_REPLACE_THREAD: self._apply_stale_thread_replacement,
             OperationKind.INVALIDATE_THREAD: self._apply_thread_invalidation,
-            OperationKind.MARK_THREAD_STALE: self._apply_thread_stale_marker,
-            OperationKind.MARK_ROOM_STALE: self._apply_room_stale_marker,
+            OperationKind.MARK_THREAD_GAP: self._apply_thread_gap_marker,
+            OperationKind.MARK_ROOM_GAP: self._apply_room_gap_marker,
             OperationKind.LIMITED_SYNC: self._apply_limited_sync,
         }
         handler = handlers.get(operation.kind)
@@ -679,7 +680,7 @@ class CacheFuzzRunner:
             thread_id(operation.room, operation.thread),
         )
 
-    async def _apply_thread_stale_marker(self, operation: FuzzOperation) -> None:
+    async def _apply_thread_gap_marker(self, operation: FuzzOperation) -> None:
         current_room_id = room_id(operation.room)
         current_thread_id = thread_id(operation.room, operation.thread)
         reason = "sync_thread_mutation" if operation.variant % 3 else "sync_opaque_encrypted_event"
@@ -699,7 +700,7 @@ class CacheFuzzRunner:
                 append_failed_reason="sync_append_failed",
             )
 
-    async def _apply_room_stale_marker(self, operation: FuzzOperation) -> None:
+    async def _apply_room_gap_marker(self, operation: FuzzOperation) -> None:
         await self.cache.mark_room_threads_gap(
             room_id(operation.room),
             reason="sync_thread_lookup_unavailable",
@@ -901,8 +902,8 @@ _WEIGHTED_KINDS = (
     OperationKind.REPLACE_THREAD,
     OperationKind.STALE_REPLACE_THREAD,
     OperationKind.INVALIDATE_THREAD,
-    OperationKind.MARK_THREAD_STALE,
-    OperationKind.MARK_ROOM_STALE,
+    OperationKind.MARK_THREAD_GAP,
+    OperationKind.MARK_ROOM_GAP,
     OperationKind.LIMITED_SYNC,
 )
 
