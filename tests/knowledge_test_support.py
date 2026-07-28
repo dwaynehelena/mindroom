@@ -29,6 +29,8 @@ def chroma_get_result(
     ids: list[str],
     metadatas: list[dict[str, Any]],
     include: Sequence[str],
+    documents: list[str] | None = None,
+    embeddings: list[list[float]] | None = None,
 ) -> dict[str, Any]:
     """Shape a Chroma ``get`` result, honoring ``include`` the way Chroma does.
 
@@ -40,10 +42,21 @@ def chroma_get_result(
 
     ``include`` is required rather than defaulted. Every production caller
     passes it explicitly, and guessing a default here would model a shape
-    nothing exercises.
+    nothing exercises. Asking for a field the caller did not supply raises
+    rather than returning ``None``, so a fake that cannot serve a query shape
+    says so instead of looking like an empty store.
     """
-    unsupported = set(include) - {"metadatas"}
+    available: dict[str, list[Any] | None] = {
+        "metadatas": metadatas,
+        "documents": documents,
+        "embeddings": embeddings,
+    }
+    unsupported = set(include) - set(available)
     if unsupported:
         msg = f"unsupported include fields: {sorted(unsupported)}"
         raise AssertionError(msg)
-    return {"ids": ids, "metadatas": metadatas if "metadatas" in include else None}
+    absent = [name for name in include if available[name] is None]
+    if absent:
+        msg = f"include asked for fields this fake was not given: {sorted(absent)}"
+        raise AssertionError(msg)
+    return {"ids": ids, **{name: (values if name in include else None) for name, values in available.items()}}

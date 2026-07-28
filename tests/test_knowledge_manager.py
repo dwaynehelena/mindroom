@@ -10,9 +10,10 @@ import subprocess
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from itertools import count
 from pathlib import Path
 from threading import Event, Lock, get_ident
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 from unittest.mock import MagicMock
 
 import httpx
@@ -75,6 +76,9 @@ if TYPE_CHECKING:
     from mindroom.constants import RuntimePaths
 
 
+_vector_row_ids = count()
+
+
 class _Collection:
     def __init__(self, name: str) -> None:
         self._name = name
@@ -94,10 +98,41 @@ class _Collection:
             selected_all = [item for item in selected_all if metadata_matches(item["metadata"], key, condition)]
         selected = selected_all[offset:] if limit is None else selected_all[offset : offset + limit]
         return chroma_get_result(
-            ids=[str(index) for index in range(offset, offset + len(selected))],
+            ids=[str(item["id"]) for item in selected],
             metadatas=[dict(item["metadata"]) for item in selected],
+            documents=[str(item["content"]) for item in selected],
+            embeddings=[list(cast("list[float]", item["embedding"])) for item in selected],
             include=include,
         )
+
+    def add(
+        self,
+        *,
+        ids: list[str],
+        embeddings: list[list[float]],
+        documents: list[str],
+        metadatas: list[dict[str, object]],
+    ) -> None:
+        if not ids:
+            # Chroma rejects an empty write rather than treating it as a no-op.
+            message = "Expected Embeddings to be non-empty list or numpy array, got [] in add."
+            raise ValueError(message)
+        with _VectorDb.lock:
+            _VectorDb.collections.setdefault(self._name, []).extend(
+                {
+                    "id": identifier,
+                    "content": document,
+                    "embedding": list(embedding),
+                    "metadata": dict(metadata),
+                }
+                for identifier, embedding, document, metadata in zip(
+                    ids,
+                    embeddings,
+                    documents,
+                    metadatas,
+                    strict=True,
+                )
+            )
 
     def delete(self, *, where: dict[str, object]) -> None:
         key, condition = next(iter(where.items()))
@@ -176,7 +211,12 @@ class _Knowledge:
         _ = (upsert, reader)
         with _VectorDb.lock:
             _VectorDb.collections.setdefault(self.vector_db.collection_name, []).append(
-                {"content": Path(path).read_text(encoding="utf-8"), "metadata": dict(metadata)},
+                {
+                    "id": f"row-{next(_vector_row_ids)}",
+                    "content": Path(path).read_text(encoding="utf-8"),
+                    "embedding": [1.0],
+                    "metadata": dict(metadata),
+                },
             )
 
     async def ainsert(
@@ -2011,10 +2051,11 @@ async def test_cancelled_refresh_waiting_for_source_lock_does_not_touch_running_
         original_save_refreshing(*args, **kwargs)
         refreshing_write_count += 1
 
-    async def _blocked_reindex(self: KnowledgeManager) -> int:
+    async def _blocked_reindex(self: KnowledgeManager, *, force_reindex: bool = False) -> int:
+        _ = force_reindex
         first_entered.set()
         await release_first.wait()
-        return await original_reindex(self)
+        return await original_reindex(self, force_reindex=force_reindex)
 
     monkeypatch.setattr(knowledge_refresh_runner, "mark_published_index_refresh_running", _track_refreshing_state)
     monkeypatch.setattr(KnowledgeManager, "reindex_all", _blocked_reindex)
@@ -3297,6 +3338,86 @@ async def test_cancelled_publish_metadata_save_keeps_published_candidate_collect
 
 
 @pytest.mark.asyncio
+async def test_publish_metadata_save_finishes_before_repeated_cancellation_escapes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated cancellation must not interrupt the metadata save drain."""
+    docs_path = tmp_path / "docs"
+    docs_path.mkdir()
+    config = _config(tmp_path, bases={"docs": docs_path}, agent_bases=["docs"])
+    runtime_paths = runtime_paths_for(config)
+    manager = KnowledgeManager("docs", config=config, runtime_paths=runtime_paths)
+    candidate_vector_db = manager._build_vector_db(manager._candidate_collection_name())
+    loop = asyncio.get_running_loop()
+    save_started = asyncio.Event()
+    release_save = Event()
+
+    def _blocked_save(_self: KnowledgeManager, *_args: object, **_kwargs: object) -> None:
+        loop.call_soon_threadsafe(save_started.set)
+        assert release_save.wait(timeout=5)
+
+    monkeypatch.setattr(KnowledgeManager, "_save_persisted_index_state", _blocked_save)
+    save = asyncio.create_task(
+        manager._save_candidate_publish_metadata(
+            candidate_vector_db=candidate_vector_db,
+            indexed_count=0,
+            source_signature="source-signature",
+        ),
+    )
+    await save_started.wait()
+    try:
+        save.cancel()
+        await asyncio.sleep(0)
+        save.cancel()
+        await asyncio.sleep(0)
+        assert not save.done(), "repeated cancellation escaped before the metadata save finished"
+    finally:
+        release_save.set()
+
+    assert await save is True
+
+
+@pytest.mark.asyncio
+async def test_cancelled_publish_metadata_save_surfaces_a_failed_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled-but-failed metadata save must not report a publication."""
+    docs_path = tmp_path / "docs"
+    docs_path.mkdir()
+    config = _config(tmp_path, bases={"docs": docs_path}, agent_bases=["docs"])
+    runtime_paths = runtime_paths_for(config)
+    manager = KnowledgeManager("docs", config=config, runtime_paths=runtime_paths)
+    candidate_vector_db = manager._build_vector_db(manager._candidate_collection_name())
+    loop = asyncio.get_running_loop()
+    save_started = asyncio.Event()
+    release_save = Event()
+
+    def _failed_save(_self: KnowledgeManager, *_args: object, **_kwargs: object) -> None:
+        loop.call_soon_threadsafe(save_started.set)
+        assert release_save.wait(timeout=5)
+        msg = "publish metadata write failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(KnowledgeManager, "_save_persisted_index_state", _failed_save)
+    save = asyncio.create_task(
+        manager._save_candidate_publish_metadata(
+            candidate_vector_db=candidate_vector_db,
+            indexed_count=0,
+            source_signature="source-signature",
+        ),
+    )
+    await save_started.wait()
+    save.cancel()
+    await asyncio.sleep(0)
+    release_save.set()
+
+    with pytest.raises(RuntimeError, match="publish metadata write failed"):
+        await save
+
+
+@pytest.mark.asyncio
 async def test_refresh_never_publishes_while_source_keeps_changing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3406,7 +3527,8 @@ async def test_same_physical_binding_refreshes_are_serialized_across_config_chan
     max_active_refreshes = 0
     call_count = 0
 
-    async def _blocked_reindex(self: KnowledgeManager) -> int:
+    async def _blocked_reindex(self: KnowledgeManager, *, force_reindex: bool = False) -> int:
+        _ = force_reindex
         _ = self
         nonlocal active_refreshes, max_active_refreshes, call_count
         active_refreshes += 1
@@ -3457,7 +3579,8 @@ async def test_shared_source_mutation_waits_for_duplicate_base_refresh(
     release_refresh = asyncio.Event()
     mutation_entered = asyncio.Event()
 
-    async def _blocked_reindex(self: KnowledgeManager) -> int:
+    async def _blocked_reindex(self: KnowledgeManager, *, force_reindex: bool = False) -> int:
+        _ = force_reindex
         _ = self
         refresh_entered.set()
         await release_refresh.wait()
@@ -4814,7 +4937,8 @@ async def test_cold_refresh_exception_surfaces_failed_availability_and_backoff(
     config = _config(tmp_path, bases={"docs": docs_path}, agent_bases=["docs"])
     runtime_paths = runtime_paths_for(config)
 
-    async def _raise_reindex(self: KnowledgeManager) -> int:
+    async def _raise_reindex(self: KnowledgeManager, *, force_reindex: bool = False) -> int:
+        _ = force_reindex
         _ = self
         msg = "cold refresh failed"
         raise RuntimeError(msg)
@@ -5023,7 +5147,8 @@ async def test_api_status_reports_direct_refresh_runner_reindex(
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def _blocked_reindex(self: KnowledgeManager) -> int:
+    async def _blocked_reindex(self: KnowledgeManager, *, force_reindex: bool = False) -> int:
+        _ = force_reindex
         _ = self
         started.set()
         await release.wait()
@@ -6630,13 +6755,13 @@ async def test_local_noop_refresh_reports_published_index(tmp_path: Path, monkey
     reindex_count = 0
     original_reindex = KnowledgeManager.reindex_all
 
-    async def _track_reindex(self: KnowledgeManager) -> int:
+    async def _track_reindex(self: KnowledgeManager, *, force_reindex: bool = False) -> int:
         nonlocal reindex_count
         reindex_count += 1
         if reindex_count > 1:
             msg = "unchanged local refresh should not reindex"
             raise AssertionError(msg)
-        return await original_reindex(self)
+        return await original_reindex(self, force_reindex=force_reindex)
 
     monkeypatch.setattr(KnowledgeManager, "reindex_all", _track_reindex)
 
@@ -6664,10 +6789,10 @@ async def test_local_refresh_reindexes_when_content_changes_with_same_mtime_and_
     reindex_count = 0
     original_reindex = KnowledgeManager.reindex_all
 
-    async def _track_reindex(self: KnowledgeManager) -> int:
+    async def _track_reindex(self: KnowledgeManager, *, force_reindex: bool = False) -> int:
         nonlocal reindex_count
         reindex_count += 1
-        return await original_reindex(self)
+        return await original_reindex(self, force_reindex=force_reindex)
 
     monkeypatch.setattr(KnowledgeManager, "reindex_all", _track_reindex)
 
@@ -6698,8 +6823,8 @@ async def test_refresh_does_not_synthesize_missing_published_metadata(
     runtime_paths = runtime_paths_for(config)
     original_reindex = KnowledgeManager.reindex_all
 
-    async def _delete_metadata_after_reindex(self: KnowledgeManager) -> int:
-        indexed_count = await original_reindex(self)
+    async def _delete_metadata_after_reindex(self: KnowledgeManager, *, force_reindex: bool = False) -> int:
+        indexed_count = await original_reindex(self, force_reindex=force_reindex)
         self._indexing_settings_path.unlink()
         return indexed_count
 
@@ -6781,9 +6906,9 @@ async def test_git_refresh_syncs_before_reindex_and_publishes_revision_without_s
         _set_git_tracked_files(self, "doc.md")
         return {"updated": True, "changed_count": 1, "removed_count": 0}
 
-    async def _track_reindex(self: KnowledgeManager) -> int:
+    async def _track_reindex(self: KnowledgeManager, *, force_reindex: bool = False) -> int:
         order.append("reindex")
-        return await original_reindex(self)
+        return await original_reindex(self, force_reindex=force_reindex)
 
     monkeypatch.setattr(KnowledgeManager, "sync_git_source", _sync_success)
     monkeypatch.setattr(KnowledgeManager, "reindex_all", _track_reindex)
@@ -6893,13 +7018,13 @@ async def test_git_noop_refresh_skips_full_reindex_when_index_is_complete(
     reindex_count = 0
     original_reindex = KnowledgeManager.reindex_all
 
-    async def _track_reindex(self: KnowledgeManager) -> int:
+    async def _track_reindex(self: KnowledgeManager, *, force_reindex: bool = False) -> int:
         nonlocal reindex_count
         reindex_count += 1
         if reindex_count > 1:
             msg = "unchanged git poll should not reindex"
             raise AssertionError(msg)
-        return await original_reindex(self)
+        return await original_reindex(self, force_reindex=force_reindex)
 
     monkeypatch.setattr(KnowledgeManager, "reindex_all", _track_reindex)
 
@@ -7144,10 +7269,10 @@ async def test_git_noop_refresh_ignores_untracked_indexable_file_changes(
         _set_git_tracked_files(self, "doc.md")
         return result
 
-    async def _track_reindex(self: KnowledgeManager) -> int:
+    async def _track_reindex(self: KnowledgeManager, *, force_reindex: bool = False) -> int:
         nonlocal reindex_count
         reindex_count += 1
-        return await original_reindex(self)
+        return await original_reindex(self, force_reindex=force_reindex)
 
     monkeypatch.setattr(KnowledgeManager, "sync_git_source", _sync)
     monkeypatch.setattr(KnowledgeManager, "reindex_all", _track_reindex)
@@ -7196,10 +7321,10 @@ async def test_git_noop_refresh_rebuilds_when_collection_is_missing(
         _set_git_tracked_files(self, "doc.md")
         return result
 
-    async def _track_reindex(self: KnowledgeManager) -> int:
+    async def _track_reindex(self: KnowledgeManager, *, force_reindex: bool = False) -> int:
         nonlocal reindex_count
         reindex_count += 1
-        return await original_reindex(self)
+        return await original_reindex(self, force_reindex=force_reindex)
 
     monkeypatch.setattr(KnowledgeManager, "sync_git_source", _sync)
     monkeypatch.setattr(KnowledgeManager, "reindex_all", _track_reindex)
@@ -7287,10 +7412,10 @@ async def test_git_noop_refresh_rebuilds_after_chunking_config_change(
         _set_git_tracked_files(self, "doc.md")
         return result
 
-    async def _track_reindex(self: KnowledgeManager) -> int:
+    async def _track_reindex(self: KnowledgeManager, *, force_reindex: bool = False) -> int:
         nonlocal reindex_count
         reindex_count += 1
-        return await original_reindex(self)
+        return await original_reindex(self, force_reindex=force_reindex)
 
     monkeypatch.setattr(KnowledgeManager, "sync_git_source", _sync)
     monkeypatch.setattr(KnowledgeManager, "reindex_all", _track_reindex)
@@ -7339,10 +7464,10 @@ async def test_force_git_reindex_bypasses_noop_fast_path(
         _set_git_tracked_files(self, "doc.md")
         return result
 
-    async def _track_reindex(self: KnowledgeManager) -> int:
+    async def _track_reindex(self: KnowledgeManager, *, force_reindex: bool = False) -> int:
         nonlocal reindex_count
         reindex_count += 1
-        return await original_reindex(self)
+        return await original_reindex(self, force_reindex=force_reindex)
 
     monkeypatch.setattr(KnowledgeManager, "sync_git_source", _sync)
     monkeypatch.setattr(KnowledgeManager, "reindex_all", _track_reindex)
@@ -7886,6 +8011,74 @@ async def test_git_query_and_fragment_tokens_stay_out_of_persistent_remote_and_m
     assert "query-secret" not in metadata_text
     assert "frag-secret" not in metadata_text
     assert redact_url_credentials(config.knowledge_bases["docs"].git.repo_url) == clean_url
+
+
+@pytest.mark.asyncio
+async def test_git_pull_that_changes_one_file_only_reindexes_that_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A one-file commit must cost one file's indexing, not the whole checkout's."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    remote_work = tmp_path / "remote-work"
+    remote_work.mkdir()
+
+    async def _git(cwd: Path, *args: str) -> None:
+        await asyncio.to_thread(
+            subprocess.run,
+            ["git", *args],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    await _git(remote_work, "init", "-b", "main")
+    await _git(remote_work, "config", "user.email", "tests@example.com")
+    await _git(remote_work, "config", "user.name", "MindRoom Tests")
+    for index in range(5):
+        (remote_work / f"doc{index}.md").write_text(f"original body {index}", encoding="utf-8")
+    await _git(remote_work, "add", ".")
+    await _git(remote_work, "commit", "-m", "seed")
+    remote_bare = tmp_path / "remote.git"
+    await asyncio.to_thread(
+        subprocess.run,
+        ["git", "clone", "--bare", str(remote_work), str(remote_bare)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    docs_path = tmp_path / "checkout"
+    config = _config(
+        tmp_path,
+        bases={"docs": docs_path},
+        agent_bases=["docs"],
+        git_configs={"docs": KnowledgeGitConfig(repo_url=str(remote_bare), branch="main")},
+    )
+    runtime_paths = runtime_paths_for(config)
+    first = await refresh_knowledge_binding("docs", config=config, runtime_paths=runtime_paths)
+    assert first.indexed_count == 5
+
+    (remote_work / "doc2.md").write_text("rewritten body 2", encoding="utf-8")
+    await _git(remote_work, "commit", "-am", "change one file")
+    await _git(remote_work, "push", str(remote_bare), "main")
+
+    second = await refresh_knowledge_binding("docs", config=config, runtime_paths=runtime_paths)
+
+    assert second.index_published is True
+    assert second.indexed_count == 1, "the whole checkout was reindexed for a one-file commit"
+    lookup = get_published_index("docs", config=config, runtime_paths=runtime_paths)
+    assert lookup.index is not None
+    contents = sorted(document.content for document in lookup.index.knowledge.search("body", max_results=10))
+    assert contents == [
+        "original body 0",
+        "original body 1",
+        "original body 3",
+        "original body 4",
+        "rewritten body 2",
+    ]
 
 
 @pytest.mark.asyncio
