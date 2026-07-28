@@ -1537,6 +1537,142 @@ async def test_duplicate_ids_in_one_batch_converge_on_clear_payload(
 
 
 @pytest.mark.asyncio
+async def test_chained_thread_relations_keep_the_middle_event_as_its_own_root(
+    event_cache: ConversationEventCache,
+) -> None:
+    """An event that is both a thread child and another event's root maps to itself.
+
+    The derived index rows repeat that middle event ID under two different thread IDs: once as a
+    child of the outer root, and once as the self row every learned root gets. A batched upsert has
+    to collapse the repeat to the row the sequential write left behind, because
+    ``ON CONFLICT DO UPDATE`` cannot touch the same row twice in one statement.
+    """
+    room_id = "!room:localhost"
+    child_id = "$child:localhost"
+    middle_id = "$middle:localhost"
+    outer_id = "$outer:localhost"
+
+    await event_cache.store_events_batch(
+        [
+            (child_id, room_id, _clear_payload(child_id, body="child", thread_root_id=middle_id)),
+            (middle_id, room_id, _clear_payload(middle_id, body="middle", thread_root_id=outer_id)),
+        ],
+    )
+
+    assert await event_cache.get_thread_id_for_event(room_id, child_id) == middle_id
+    assert await event_cache.get_thread_id_for_event(room_id, middle_id) == middle_id
+    assert await event_cache.get_thread_id_for_event(room_id, outer_id) == outer_id
+
+
+@pytest.mark.asyncio
+async def test_repeated_edit_ids_in_one_batch_keep_the_last_edit_index_row(
+    event_cache: ConversationEventCache,
+) -> None:
+    """A batch naming one edit event twice indexes that edit once, keeping the last payload.
+
+    Both occurrences are accepted -- clear content never loses to clear content -- so the derived
+    edit-index rows repeat the same ``edit_event_id``, which a batched upsert has to collapse.
+    """
+    room_id = "!room:localhost"
+    original_id = "$original:localhost"
+    edit_id = "$edit:localhost"
+
+    await event_cache.store_events_batch(
+        [(original_id, room_id, _clear_payload(original_id, body="original"))],
+    )
+    await event_cache.store_events_batch(
+        [
+            (edit_id, room_id, _clear_payload(edit_id, body="first edit", edit_of=original_id)),
+            (edit_id, room_id, _clear_payload(edit_id, body="second edit", edit_of=original_id)),
+        ],
+    )
+
+    latest_edit = await event_cache.get_latest_edit(room_id, original_id)
+    assert latest_edit is not None
+    assert latest_edit["event_id"] == edit_id
+    assert latest_edit["content"]["m.new_content"]["body"] == "second edit"
+
+
+@pytest.mark.asyncio
+async def test_one_write_settles_proven_and_unproven_thread_roots_together(
+    event_cache: ConversationEventCache,
+) -> None:
+    """Re-parenting the only child proves the new root and unproves the old one in one write."""
+    room_id = "!room:localhost"
+    child_id = "$child:localhost"
+    old_root_id = "$old-root:localhost"
+    new_root_id = "$new-root:localhost"
+
+    await event_cache.store_events_batch(
+        [(child_id, room_id, _clear_payload(child_id, body="first", thread_root_id=old_root_id))],
+    )
+    assert await event_cache.get_thread_id_for_event(room_id, old_root_id) == old_root_id
+
+    await event_cache.store_events_batch(
+        [(child_id, room_id, _clear_payload(child_id, body="reparented", thread_root_id=new_root_id))],
+    )
+
+    assert await event_cache.get_thread_id_for_event(room_id, child_id) == new_root_id
+    assert await event_cache.get_thread_id_for_event(room_id, new_root_id) == new_root_id
+    assert await event_cache.get_thread_id_for_event(room_id, old_root_id) is None
+
+
+@pytest.mark.asyncio
+async def test_repeated_event_in_a_snapshot_keeps_its_last_position_on_every_backend(
+    event_cache: ConversationEventCache,
+) -> None:
+    """A snapshot of ``A, B, A-last`` reads back as ``B, A`` on both backends.
+
+    Membership rows are ordered by ``origin_server_ts`` and then by the sequence value each write
+    draws, so when the timestamps tie the write order decides the read order. The sequential loop
+    rewrote ``A`` after ``B``, leaving ``A`` newer. A batched upsert that collapsed the repeat to
+    ``A``'s *first* position would draw ``A``'s sequence value before ``B``'s and silently reverse
+    the pair against SQLite.
+    """
+    room_id = "!room:localhost"
+    thread_id = "$root:localhost"
+    first_id = "$a:localhost"
+    second_id = "$b:localhost"
+    tied_ts = 1000
+
+    await _replace_thread(
+        event_cache,
+        room_id,
+        thread_id,
+        [
+            _clear_payload(thread_id, body="root", origin_server_ts=tied_ts),
+            _clear_payload(first_id, body="a-first", thread_root_id=thread_id, origin_server_ts=tied_ts),
+            _clear_payload(second_id, body="b", thread_root_id=thread_id, origin_server_ts=tied_ts),
+            _clear_payload(first_id, body="a-last", thread_root_id=thread_id, origin_server_ts=tied_ts),
+        ],
+    )
+
+    thread_events = await event_cache.get_thread_events(room_id, thread_id)
+    assert thread_events is not None
+    assert [event["event_id"] for event in thread_events] == [thread_id, second_id, first_id]
+    assert thread_events[-1]["content"]["body"] == "a-last"
+
+
+@pytest.mark.asyncio
+async def test_repeated_event_in_one_thread_snapshot_binds_the_thread_once(
+    event_cache: ConversationEventCache,
+) -> None:
+    """A snapshot naming one event twice binds it to the thread exactly once."""
+    room_id = "!room:localhost"
+    thread_id = "$thread-root:localhost"
+    duplicated_id = "$duplicated:localhost"
+    root_source = _clear_payload(thread_id, body="root", origin_server_ts=1000)
+    reply = _clear_payload(duplicated_id, body="reply", thread_root_id=thread_id, origin_server_ts=1100)
+
+    await _replace_thread(event_cache, room_id, thread_id, [root_source, reply, reply])
+
+    thread_events = await event_cache.get_thread_events(room_id, thread_id)
+    assert thread_events is not None
+    assert [event["event_id"] for event in thread_events] == [thread_id, duplicated_id]
+    assert await event_cache.get_thread_id_for_event(room_id, duplicated_id) == thread_id
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("arrival_order", [("clear", "opaque"), ("opaque", "clear")])
 async def test_separate_cache_clients_cannot_downgrade_decrypted_payload(
     event_cache_factory: Callable[[], ConversationEventCache],
