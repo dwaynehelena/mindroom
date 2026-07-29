@@ -816,14 +816,13 @@ class TestAgentBot(AgentBotTestBase):
         _wrap_extracted_collaborators(bot)
         bot.client = _make_matrix_client_mock()
         tracker = _set_turn_store_tracker(bot, MagicMock())
-        tracker.visible_echo_event_id_for_sources.side_effect = lambda source_event_ids: (
-            "$voice_echo" if tuple(source_event_ids) == ("$voice", "$text") else None
-        )
         tracker.get_turn_record.side_effect = lambda source_event_id: (
             TurnRecord.create(
                 ["$voice", "$text"],
+                response_event_id="$voice_echo",
                 completed=False,
                 visible_echo_event_id="$voice_echo",
+                visible_echo_is_fallback=False,
             )
             if source_event_id in {"$voice", "$text"}
             else None
@@ -886,6 +885,7 @@ class TestAgentBot(AgentBotTestBase):
                     response_event_id="$voice_echo",
                     source_event_prompts={"$voice": "voice prompt", "$text": "text prompt"},
                     visible_echo_event_id="$voice_echo",
+                    visible_echo_is_fallback=False,
                     requester_id="@user:localhost",
                     correlation_id="corr-visible-echo",
                 ),
@@ -1612,7 +1612,6 @@ class TestAgentBot(AgentBotTestBase):
                     ),
                 ),
             ),
-            patch.object(bot._turn_controller, "_maybe_send_visible_voice_echo", new=AsyncMock()) as mock_echo,
             patch.object(
                 bot._response_runner,
                 "active_thread_ids_for_room",
@@ -1645,7 +1644,6 @@ class TestAgentBot(AgentBotTestBase):
             ready_event = mock_admit.await_args.kwargs["ready_result"]
 
         assert isinstance(ready_event, ReadyPendingEvent)
-        mock_echo.assert_awaited_once()
         mock_reserve_waiting_human_message.assert_called_once()
         reserved_target = mock_reserve_waiting_human_message.call_args.kwargs["target"]
         assert reserved_target.resolved_thread_id == "$thread_root"

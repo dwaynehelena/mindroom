@@ -523,7 +523,7 @@ knowledge_bases:
 # Voice message handling (optional)
 voice:
   enabled: false                   # Default: false
-  visible_router_echo: true        # Optional: show the normalized voice text from the router
+  visible_router_echo: true        # Optional: show router voice progress or direct fallback
   stt:
     provider: openai               # Default: openai
     model: gpt-4o-transcribe       # Default: gpt-4o-transcribe

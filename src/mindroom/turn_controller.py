@@ -32,10 +32,8 @@ from mindroom.constants import (
     STREAM_STATUS_KEY,
     STREAM_STATUS_PENDING,
     STREAM_STATUS_STREAMING,
-    VISIBLE_ROUTER_VOICE_ECHO_KEY,
     VOICE_PREFIX,
     VOICE_RAW_AUDIO_FALLBACK_KEY,
-    VOICE_TRANSCRIPT_KEY,
     RuntimePaths,
 )
 from mindroom.delivery_gateway import EditTextRequest, SendTextRequest
@@ -116,9 +114,9 @@ from mindroom.turn_origin import (
     TurnIntent,
     classify_turn_origin,
     original_sender_for_router_handoff,
-    original_sender_for_router_relay,
 )
 from mindroom.turn_policy import IngressHookRunner, PreparedDispatch, ResponseAction, TurnPolicy
+from mindroom.visible_voice_echo import VisibleVoiceEchoRequest
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -140,6 +138,7 @@ if TYPE_CHECKING:
     from mindroom.sync_restart_retry import InterruptedTurnRooms
     from mindroom.tool_system.runtime_context import ToolRuntimeSupport
     from mindroom.turn_store import TurnStore
+    from mindroom.visible_voice_echo import VisibleVoiceEchoLifecycle
 
 
 _QUEUED_NOTICE_METADATA_KIND = "queued_notice_reservation"
@@ -307,6 +306,14 @@ class _DispatchPreparation:
 
 
 @dataclass(frozen=True)
+class _ReadyVoiceFallback:
+    """Fallback event plus its ready ingress wrapper."""
+
+    event: PreparedTextEvent
+    ready: ReadyPendingEvent
+
+
+@dataclass(frozen=True)
 class TurnControllerDeps:
     """Collaborators needed for turn control, policy, and execution."""
 
@@ -328,6 +335,7 @@ class TurnControllerDeps:
     edit_regenerator: _EditRegenerator
     ingress: IngressValidator
     interrupted_turn_rooms: InterruptedTurnRooms
+    visible_voice_echo: VisibleVoiceEchoLifecycle
 
 
 @dataclass
@@ -980,78 +988,6 @@ class TurnController:
         )
         return _IngressAdmissionOutcome.ADMITTED
 
-    async def _maybe_send_visible_voice_echo(
-        self,
-        room: nio.MatrixRoom,
-        event: AudioMessageEvent,
-        *,
-        text: str,
-        thread_id: str | None,
-        requester_user_id: str,
-        normalized_source: dict[str, Any],
-    ) -> str | None:
-        """Optionally post a visible router echo for normalized audio."""
-        if self.deps.agent_name != ROUTER_AGENT_NAME or not self.deps.runtime.config.voice.visible_router_echo:
-            return None
-
-        existing_visible_echo_event_id = self.deps.turn_store.visible_echo_for_source(event.event_id)
-        if existing_visible_echo_event_id is not None:
-            return existing_visible_echo_event_id
-
-        target = self.deps.resolver.build_message_target(
-            room_id=room.room_id,
-            thread_id=thread_id,
-            reply_to_event_id=event.event_id,
-            event_source=event.source,
-        )
-        visible_echo_event_id = await self.deps.delivery_gateway.send_text(
-            SendTextRequest(
-                target=target,
-                response_text=text,
-                skip_mentions=True,
-                extra_content=self._visible_router_voice_echo_extra_content(
-                    requester_user_id=requester_user_id,
-                    normalized_source=normalized_source,
-                ),
-            ),
-        )
-        if visible_echo_event_id is not None:
-            self.deps.turn_store.record_visible_echo(event.event_id, visible_echo_event_id)
-        return visible_echo_event_id
-
-    def _visible_router_voice_echo_extra_content(
-        self,
-        *,
-        requester_user_id: str,
-        normalized_source: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Return trusted relay metadata for a visible router voice echo."""
-        payload_metadata = payload_metadata_from_source(normalized_source, trust_internal_metadata=True)
-        inherited_original_sender = payload_metadata.original_sender
-        relay_original_sender = original_sender_for_router_relay(
-            requester_id=requester_user_id,
-            requester_entity_name=self.deps.ingress.managed_entity_name_for_sender(requester_user_id),
-            inherited_original_sender=inherited_original_sender,
-            inherited_original_sender_entity_name=(
-                self.deps.ingress.managed_entity_name_for_sender(inherited_original_sender)
-                if inherited_original_sender is not None
-                else None
-            ),
-        )
-        extra_content: dict[str, Any] = {
-            SOURCE_KIND_KEY: TRUSTED_INTERNAL_RELAY_SOURCE_KIND,
-            VISIBLE_ROUTER_VOICE_ECHO_KEY: True,
-        }
-        if relay_original_sender is not None:
-            extra_content[ORIGINAL_SENDER_KEY] = relay_original_sender
-        if payload_metadata.attachment_ids:
-            extra_content[ATTACHMENT_IDS_KEY] = list(payload_metadata.attachment_ids)
-        if payload_metadata.raw_audio_fallback:
-            extra_content[VOICE_RAW_AUDIO_FALLBACK_KEY] = True
-        if payload_metadata.voice_transcript:
-            extra_content[VOICE_TRANSCRIPT_KEY] = True
-        return extra_content
-
     async def _prepare_dispatch(
         self,
         room: nio.MatrixRoom,
@@ -1627,11 +1563,8 @@ class TurnController:
         handled_turn: TurnRecord,
     ) -> TurnRecord | None:
         """Return the terminal handled-turn outcome for one ignored router turn."""
-        visible_router_echo_event_id = (
-            handled_turn.visible_echo_event_id
-            or self.deps.turn_store.visible_echo_for_sources(
-                handled_turn.source_event_ids,
-            )
+        visible_router_echo_event_id = self.deps.turn_store.finalized_visible_echo_for_sources(
+            handled_turn.source_event_ids,
         )
         if visible_router_echo_event_id is None:
             return None
@@ -2283,6 +2216,14 @@ class TurnController:
         """Normalize a raw voice event after its conversation key is fixed."""
         event = prechecked_event.event
         queued_notice_reservation = None
+        visible_echo = self.deps.visible_voice_echo.start(
+            VisibleVoiceEchoRequest(
+                source_event_id=event.event_id,
+                target=voice_target,
+                requester_user_id=prechecked_event.requester_user_id,
+                raw_source=event.source,
+            ),
+        )
         reservation_released_or_handed_off = False
         try:
             envelope = self.deps.resolver.build_ingress_envelope(
@@ -2302,25 +2243,7 @@ class TurnController:
                 dispatch_timing=dispatch_timing,
             )
 
-            try:
-                await self._maybe_send_visible_voice_echo(
-                    room,
-                    event,
-                    text=normalized_event.body,
-                    thread_id=effective_thread_id,
-                    requester_user_id=prechecked_event.requester_user_id,
-                    normalized_source=normalized_event.source,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self.deps.logger.warning(
-                    "Visible voice echo failed; continuing canonical voice dispatch",
-                    event_id=event.event_id,
-                    room_id=room.room_id,
-                    exception_type=exc.__class__.__name__,
-                    error=str(exc),
-                )
+            await self.deps.visible_voice_echo.finish(visible_echo, normalized_event)
 
             normalized_target = self.deps.resolver.build_message_target(
                 room_id=room.room_id,
@@ -2355,19 +2278,32 @@ class TurnController:
                 ),
             )
         except asyncio.CancelledError:
+            self.deps.visible_voice_echo.finish_after_cancellation(
+                visible_echo,
+                _raw_voice_fallback_event(event, thread_id=voice_target.resolved_thread_id),
+            )
             raise
         except Exception as exc:
             if queued_notice_reservation is not None:
                 queued_notice_reservation.cancel()
                 queued_notice_reservation = None
-            return await self._ready_voice_fallback_event(
-                room=room,
-                event=event,
-                requester_user_id=prechecked_event.requester_user_id,
-                thread_id=voice_target.resolved_thread_id,
-                dispatch_timing=dispatch_timing,
-                error=exc,
-            )
+            try:
+                fallback = await self._ready_voice_fallback_event(
+                    room=room,
+                    event=event,
+                    requester_user_id=prechecked_event.requester_user_id,
+                    thread_id=voice_target.resolved_thread_id,
+                    dispatch_timing=dispatch_timing,
+                    error=exc,
+                )
+            except asyncio.CancelledError:
+                self.deps.visible_voice_echo.finish_after_cancellation(
+                    visible_echo,
+                    _raw_voice_fallback_event(event, thread_id=voice_target.resolved_thread_id),
+                )
+                raise
+            await self.deps.visible_voice_echo.finish(visible_echo, fallback.event)
+            return fallback.ready
         finally:
             if not reservation_released_or_handed_off and queued_notice_reservation is not None:
                 queued_notice_reservation.cancel()
@@ -2409,7 +2345,7 @@ class TurnController:
         thread_id: str | None,
         dispatch_timing: DispatchPipelineTiming | None,
         error: Exception,
-    ) -> ReadyPendingEvent:
+    ) -> _ReadyVoiceFallback:
         """Return a raw-audio fallback when voice readiness fails before STT."""
         self.deps.logger.warning(
             "Voice readiness failed; dispatching raw-audio fallback",
@@ -2455,17 +2391,20 @@ class TurnController:
                 exception_type=metadata_error.__class__.__name__,
                 error=str(metadata_error),
             )
-        return ReadyPendingEvent(
-            pending_event=PendingEvent(
-                event=fallback_event,
-                room=room,
-                source_kind=VOICE_SOURCE_KIND,
-                requester_user_id=requester_user_id,
-                dispatch_policy_source_kind=dispatch_policy_source_kind,
-                hook_source=hook_source,
-                message_received_depth=message_received_depth,
-                trust_internal_payload_metadata=True,
-                dispatch_metadata=_queued_notice_dispatch_metadata(queued_notice_reservation, target),
+        return _ReadyVoiceFallback(
+            event=fallback_event,
+            ready=ReadyPendingEvent(
+                pending_event=PendingEvent(
+                    event=fallback_event,
+                    room=room,
+                    source_kind=VOICE_SOURCE_KIND,
+                    requester_user_id=requester_user_id,
+                    dispatch_policy_source_kind=dispatch_policy_source_kind,
+                    hook_source=hook_source,
+                    message_received_depth=message_received_depth,
+                    trust_internal_payload_metadata=True,
+                    dispatch_metadata=_queued_notice_dispatch_metadata(queued_notice_reservation, target),
+                ),
             ),
         )
 
