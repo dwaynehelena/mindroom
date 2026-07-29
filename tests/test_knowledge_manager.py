@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import traceback
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -56,6 +57,7 @@ from mindroom.knowledge.manager import KnowledgeManager, _knowledge_source_signa
 from mindroom.knowledge.redaction import (
     credential_free_repo_url,
     credential_free_url_identity,
+    redact_credentials_in_text,
     redact_url_credentials,
 )
 from mindroom.knowledge.refresh_outcome import RefreshOutcome
@@ -7973,3 +7975,185 @@ async def test_valid_json_does_not_hide_downstream_json_decode_error(
         == "Indexed 0 of 1 managed knowledge files (first error: knowledge indexing failed (JSONDecodeError))"
     )
     assert all(entry["event"] != "Malformed JSON knowledge file; indexing as text" for entry in logs)
+
+
+#: fixed; ``ambiguous-authority`` was already redacted by luck, because its last
+#: ``@`` happens to fall after the secret, and is pinned so it stays that way.
+
+
+#: Repository URLs that must never be written to ``.git/config``. The first four
+#: are documented provider credential forms with the scheme mistyped or dropped;
+#: ``urlparse`` reports the username as a scheme and finds no authority, so a
+#: check that trusted the parse would treat the password as a hostname.
+_UNPERSISTABLE_REPO_URLS = [
+    pytest.param("oauth2:{secret}@gitlab.com:org/repo.git", id="gitlab-oauth2-form"),
+    pytest.param("x-access-token:{secret}@github.com/org/repo.git", id="github-token-form"),
+    pytest.param("user:{secret}@github.com:org/repo.git", id="userinfo-without-scheme"),
+    pytest.param("user%3A{secret}@github.com:org/repo.git", id="encoded-colon-without-scheme"),
+    pytest.param("https:{secret}@host/x", id="scheme-without-slashes"),
+    pytest.param("HTTPS:{secret}@host/x", id="uppercase-scheme-without-slashes"),
+    pytest.param("http:///git-user:{secret}@example.com/org/repo.git", id="empty-authority"),
+    pytest.param("//git-user:{secret}@example.com/org/repo.git", id="protocol-relative"),
+    pytest.param("https://user%3A{secret}%40example.com/repo.git", id="percent-encoded-authority"),
+    pytest.param("https://user%253A{secret}%2540example.com/repo.git", id="double-encoded-authority"),
+    pytest.param("https://host/https://u:{secret}@inner/x", id="nested-url"),
+]
+
+#: Remote forms that must keep working. Refusing any of these would break a
+#: supported configuration, so the gate has to admit them positively.
+_PERSISTABLE_REPO_URLS = [
+    ("https://example.com/org/repo.git", "https://example.com/org/repo.git"),
+    ("https://user:{secret}@example.com/org/repo.git", "https://example.com/org/repo.git"),
+    ("ssh://git@example.com/org/repo.git", "ssh://git@example.com/org/repo.git"),
+    ("ssh://git:{secret}@example.com/org/repo.git", "ssh://example.com/org/repo.git"),
+    ("git@github.com:org/repo.git", "git@github.com:org/repo.git"),
+    ("github.com:org/repo.git", "github.com:org/repo.git"),
+    ("git@my_host.com:o/r.git", "git@my_host.com:o/r.git"),
+    ("https://[::1]:8443/org/repo.git", "https://[::1]:8443/org/repo.git"),
+    ("file:///srv/repos/x.git", "file:///srv/repos/x.git"),
+    ("/srv/repos/x.git", "/srv/repos/x.git"),
+    ("https://host:8443/a@b", "https://host:8443/a@b"),
+    ("https://host/@scope/pkg.git", "https://host/@scope/pkg.git"),
+]
+
+#: Netloc codepoints that NFKC-normalise to a URL delimiter. ``urlsplit``
+#: rejects these and quotes the offending netloc -- password included -- in the
+#: exception, and no redactor can clean that message because it holds no ASCII
+#: delimiter to anchor on. Both are reachable from ``repo_url``, an unvalidated
+#: string, and neither needs a credential present to make ``urlparse`` raise.
+_LOOKALIKE_SEPARATORS = ["\uff20", "\ufe6b", "\uff1a"]
+
+
+@pytest.mark.parametrize("repo_url_template", _UNPERSISTABLE_REPO_URLS)
+def test_unsafe_remote_url_is_refused_rather_than_persisted(repo_url_template: str) -> None:
+    """A remote URL that cannot be parsed is refused, not sanitised.
+
+    Writing the checkout's ``origin`` is the one place a credential would land on
+    disk and stay there across syncs, so the rule is parse-or-refuse: accept only
+    shapes whose authority actually resolves, and reject the rest rather than
+    guessing where their userinfo sits.
+    """
+    secret = "S3CR3T-CANARY"  # noqa: S105
+    repo_url = repo_url_template.format(secret=secret)
+
+    with pytest.raises(RuntimeError, match="Refusing to write an unsafe remote URL") as exc_info:
+        knowledge_git_source_module._persistable_remote_url(repo_url, "docs")
+
+    assert secret not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(("repo_url_template", "expected"), _PERSISTABLE_REPO_URLS)
+def test_supported_remote_url_forms_are_still_persistable(repo_url_template: str, expected: str) -> None:
+    """Parse-or-refuse must not cost any supported remote form."""
+    secret = "S3CR3T-CANARY"  # noqa: S105
+    persisted = knowledge_git_source_module._persistable_remote_url(repo_url_template.format(secret=secret), "docs")
+
+    assert persisted == expected
+    assert secret not in persisted
+
+
+@pytest.mark.parametrize("separator", _LOOKALIKE_SEPARATORS)
+def test_lookalike_separator_refusal_names_no_url(separator: str) -> None:
+    """The refusal, and everything chained behind it, must name no URL.
+
+    ``urlsplit``'s message quotes the netloc, and the scheduled refresh
+    subprocess logs failures with ``logger.exception``, which prints the whole
+    chain -- so the refusal is raised ``from None``.
+    """
+    secret = "S3CR3T-CANARY"  # noqa: S105
+    repo_url = f"https://user:{secret}{separator}example.com/org/repo.git"
+
+    with pytest.raises(RuntimeError) as exc_info:
+        knowledge_git_source_module._persistable_remote_url(repo_url, "docs")
+
+    chain = "".join(traceback.format_exception(type(exc_info.value), exc_info.value, exc_info.value.__traceback__))
+    assert secret not in chain
+
+
+@pytest.mark.parametrize("separator", _LOOKALIKE_SEPARATORS)
+def test_git_auth_env_refuses_a_lookalike_separator_without_raising(separator: str, tmp_path: Path) -> None:
+    """``_git_auth_env`` must be safe on its own, not because of when it is called.
+
+    Every caller reaches it only after ``_persistable_remote_url`` has refused
+    such URLs, so this is unreachable in the current ordering. It is pinned
+    because that ordering is not a property of the function, and an exception
+    escaping here would carry the password into whatever logs it.
+    """
+    secret = "S3CR3T-CANARY"  # noqa: S105
+    repo_url = f"https://user:{secret}{separator}example.com/org/repo.git"
+
+    assert knowledge_git_source_module._git_auth_env(repo_url, None, test_runtime_paths(tmp_path)) is None
+
+
+@pytest.mark.parametrize("separator", ["\uff20", "\uff1a"])
+def test_redacting_an_unparseable_url_does_not_raise(separator: str) -> None:
+    """The crash this PR exists to fix, at the redactor itself.
+
+    A netloc holding an NFKC delimiter lookalike makes ``urlparse`` raise. No
+    credential is required: recording *any* Git failure whose message contains
+    such a URL previously raised while the failure was being recorded, and the
+    knowledge API then returned 500 for as long as the error stayed persisted.
+    """
+    text = f"fatal: unable to access 'https://exa{separator}mple.com/repo.git': failed"
+
+    assert "***" in redact_credentials_in_text(text)
+
+
+@pytest.mark.parametrize("length", [2047, 2048, 2049, 4096])
+def test_long_credential_free_urls_keep_their_diagnostic(length: int) -> None:
+    """Redaction must not apply the write path's length policy to diagnostics.
+
+    ``MAX_REDACTABLE_TOKEN_LENGTH`` bounds ``fully_unquoted``, which only the
+    ``.git/config`` write gate calls. Bounding the redactor by the same constant
+    replaced any URL past 2048 characters with ``***``, so a Git or Git LFS error
+    carrying a long endpoint lost its diagnostic entirely -- for a URL that parses
+    fine and holds no credential. The expectation here is ``origin/main``'s:
+    preserved at every length.
+    """
+    prefix = "https://host/"
+    url = prefix + "a" * (length - len(prefix))
+    text = f"fatal: unable to access '{url}': failed"
+
+    assert redact_credentials_in_text(text) == text
+
+
+@pytest.mark.asyncio
+async def test_run_git_reports_the_git_failure_when_stderr_holds_an_unparseable_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed URLs in Git output must not replace the failure with a parse error.
+
+    Redaction runs on whatever a remote or a local ``git`` chose to print, and an
+    unterminated IPv6 literal makes ``urlparse`` raise. Raising there would
+    destroy the diagnostic exactly when something has already gone wrong.
+    """
+    manager = _git_manager(tmp_path)
+
+    class _FailingProcess:
+        returncode = 128
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"", b"fatal: unable to access 'http://[': bad address"
+
+    async def _fake_create_subprocess_exec(*args: object, **kwargs: object) -> _FailingProcess:
+        _ = args, kwargs
+        return _FailingProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    with pytest.raises(RuntimeError, match="Git command failed with exit code 128") as exc_info:
+        await manager.git_source._run_git(["fetch", "origin", "main"])
+
+    assert "bad address" in str(exc_info.value)
+
+
+def test_redacting_a_non_ascii_basic_token_does_not_raise() -> None:
+    """A Basic token that is not decodable must still redact, not blow up.
+
+    ``b64decode`` raises a bare ``ValueError`` for non-ASCII input rather than
+    the ``binascii.Error`` a narrower ``except`` would catch, so this pins the
+    breadth of that handler: the header is still redacted, and redaction never
+    replaces the Git failure it was called to sanitise.
+    """
+    assert redact_credentials_in_text("Authorization: Basic éééé") == "Authorization: Basic ***"
