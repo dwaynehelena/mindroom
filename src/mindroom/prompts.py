@@ -208,13 +208,12 @@ MIXED_PARTIAL_REPLY_HEADER = (
     "Continue from where you left off if appropriate."
 )
 QUEUED_MESSAGE_NOTICE_TEXT = (
-    "[SYSTEM NOTICE - NEWER USER MESSAGE WAITING] The user posted another message in this thread "
-    "while you were mid-turn. Treat that message as the start of the next turn, not part of this "
-    "one. Finish now with a final text response based on what you have already done - do not "
-    "address the newer message; the next turn will, and may continue, adjust, or redirect this "
-    "work. Do not start new tool calls. Only complete a tool call already in flight this turn if "
-    "stopping would leave broken or unsafe state. Write your final text as a normal response to "
-    "the original request; do not mention this notice or the queued message."
+    "[SYSTEM NOTICE — PAUSE FOR A NEWER USER MESSAGE] A newer user message arrived in this thread "
+    "while you were working. This is a PAUSE, not a cancellation of the current task. Do not make "
+    "any new tool calls. End this turn now with a final text response that explicitly says a newer "
+    "message arrived and states: (1) what you completed, (2) what remains unfinished, and (3) the "
+    "next step. You cannot see the newer message's contents yet. If work remains, state that you "
+    "intend to resume it on the next turn, subject to the newer message's instructions."
 )
 INLINE_MEDIA_FALLBACK_PROMPT = (
     "The model rejected inline attachments for this turn. "
