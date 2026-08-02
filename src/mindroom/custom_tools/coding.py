@@ -37,6 +37,8 @@ _MAX_LINE_CHARS = 500  # Per-line truncation for grep output
 _DEFAULT_GREP_LIMIT = 100
 _DEFAULT_FIND_LIMIT = 1000
 _DEFAULT_LS_LIMIT = 500
+# Candidates buffered before each gitignore filtering pass while streaming a glob.
+_GLOB_SCAN_CHUNK = 2000
 _DIFF_CONTEXT_LINES = 4
 
 
@@ -462,6 +464,38 @@ def _list_directory(target: Path, limit: int) -> str:
     return result
 
 
+def _bounded_glob_matches(
+    search_path: Path,
+    pattern: str,
+    filter_root: Path,
+    limit: int,
+) -> list[Path]:
+    """Collect up to limit + 1 visible matches without materializing the whole tree.
+
+    A recursive pattern over a large root (a home directory, say) yields hundreds of
+    thousands of entries, so the glob is consumed lazily and abandoned as soon as
+    enough survivors exist to detect truncation. Candidates are filtered in chunks
+    because gitignore filtering needs a batch, and only survivors count toward the
+    limit -- an ignored path must not consume a result slot.
+    """
+    needed = limit + 1
+    kept: list[Path] = []
+    pending: list[Path] = []
+
+    for candidate in search_path.glob(pattern):
+        pending.append(candidate)
+        if len(pending) < _GLOB_SCAN_CHUNK:
+            continue
+        kept.extend(_filter_hidden_and_ignored(pending, filter_root))
+        pending.clear()
+        if len(kept) >= needed:
+            return kept[:needed]
+
+    if pending:
+        kept.extend(_filter_hidden_and_ignored(pending, filter_root))
+    return kept[:needed]
+
+
 def _find_files_in(
     search_path: Path,
     base_dir: Path,
@@ -474,13 +508,13 @@ def _find_files_in(
     if glob_error:
         return glob_error
 
+    filter_root = base_dir if restrict_to_base_dir else search_path
     try:
-        candidates = [p for p in sorted(search_path.glob(pattern)) if p.is_file()]
+        filtered = _bounded_glob_matches(search_path, pattern, filter_root, limit)
     except (NotImplementedError, ValueError) as e:
         return f"Error: Invalid glob pattern '{pattern}': {e}"
 
-    filter_root = base_dir if restrict_to_base_dir else search_path
-    filtered = _filter_hidden_and_ignored(candidates, filter_root)
+    filtered.sort()
     matches: list[str] = []
     for candidate in filtered:
         try:

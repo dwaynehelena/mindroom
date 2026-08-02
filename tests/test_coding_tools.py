@@ -9,8 +9,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from mindroom.custom_tools import coding
 from mindroom.custom_tools.coding import (
     CodingTools,
+    _bounded_glob_matches,
     _find_all_matches,
     _normalize_for_fuzzy,
     _run_ripgrep,
@@ -26,6 +28,7 @@ from mindroom.tools.path_safety import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 
@@ -841,6 +844,20 @@ class TestLineTruncation:
         assert result.endswith("[truncated]")
 
 
+class _CountingGlobRoot:
+    """Search root stub that records how much of the glob was consumed."""
+
+    def __init__(self, entries: list[Path]) -> None:
+        self.entries = list(entries)
+        self.consumed = 0
+
+    def glob(self, _pattern: str) -> Iterator[Path]:
+        """Yield the prepared entries, counting each one handed out."""
+        for entry in self.entries:
+            self.consumed += 1
+            yield entry
+
+
 class TestFindFiles:
     """Tests for CodingTools.find_files."""
 
@@ -873,6 +890,52 @@ class TestFindFiles:
         tools = CodingTools(base_dir=str(tmp_path))
         result = tools.find_files("*.txt", limit=3)
         assert "limited" not in result.lower()
+
+    def test_bounded_glob_abandons_scan_once_limit_is_reachable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The glob must be abandoned early instead of walking the whole tree.
+
+        A recursive pattern over a large root yields hundreds of thousands of entries,
+        so consuming it fully makes the limit unenforceable.
+        """
+        entries = []
+        for i in range(40):
+            path = tmp_path / f"file{i:02d}.txt"
+            path.write_text("x")
+            entries.append(path)
+
+        monkeypatch.setattr(coding, "_GLOB_SCAN_CHUNK", 4)
+        root = _CountingGlobRoot(entries)
+
+        matches = _bounded_glob_matches(root, "*.txt", tmp_path, 2)
+
+        assert len(matches) == 3, "should stop at limit + 1 so truncation stays detectable"
+        assert root.consumed < len(entries), "the whole tree was walked despite the limit"
+
+    def test_find_limit_counts_only_visible_matches(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Gitignored candidates must not consume result slots while chunking."""
+        subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+        (tmp_path / ".gitignore").write_text("ignored*.txt\n")
+        for i in range(6):
+            (tmp_path / f"ignored{i}.txt").write_text("x")
+        for i in range(3):
+            (tmp_path / f"visible{i}.txt").write_text("x")
+
+        monkeypatch.setattr(coding, "_GLOB_SCAN_CHUNK", 2)
+        tools = CodingTools(base_dir=str(tmp_path))
+
+        result = tools.find_files("*.txt", limit=3)
+
+        for i in range(3):
+            assert f"visible{i}.txt" in result
+        assert "ignored" not in result
 
     def test_find_with_absolute_glob_returns_error(self, tools: CodingTools) -> None:
         """Invalid absolute glob patterns should return an error, not raise."""
