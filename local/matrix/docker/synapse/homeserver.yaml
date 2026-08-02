@@ -40,6 +40,10 @@ log_config: "/data/log.config"
 enable_registration: true
 enable_registration_without_verification: true
 
+# Appservices (bridges)
+app_service_config_files:
+  - /data/telegram-registration.yaml
+
 # ========================================
 # COMPLETE RATE LIMITING CONFIGURATION
 # All values set to 10000 to effectively disable rate limiting
