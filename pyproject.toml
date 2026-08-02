@@ -495,6 +495,9 @@ override-dependencies = [
   # On Python 3.14 it source-builds against zlib, so use Pillow 11.x there.
   "pillow>=10.2,<11; python_version < '3.14'",
   "pillow>=11,<12; python_version >= '3.14'",
+  # onnxruntime >=1.24 ships no macosx x86_64 wheels (Intel Macs); 1.23.2 is the
+  # last release with one. Pin it only on that platform; arm64/Linux stay current.
+  "onnxruntime==1.23.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
 
 [tool.ruff]
