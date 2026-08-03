@@ -2,6 +2,7 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: mindroom-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_DB: synapse
       POSTGRES_USER: synapse
@@ -18,6 +19,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: mindroom-redis
+    restart: unless-stopped
     volumes:
       - redis_data:/data
     healthcheck:
@@ -29,6 +31,7 @@ services:
   synapse:
     image: matrixdotorg/synapse:latest
     container_name: mindroom-synapse
+    restart: unless-stopped
     environment:
       SYNAPSE_CONFIG_PATH: /data/homeserver.yaml
       UID: 1000
@@ -36,6 +39,12 @@ services:
     volumes:
       - ./docker/synapse:/data
       - synapse_media:/data/media_store
+      # REQUIRED. The real 501-byte appservice registration lives outside the repo,
+      # in the bridge's data dir. Without this mount /data/telegram-registration.yaml
+      # resolves to the 0-byte placeholder committed under ./docker/synapse and
+      # Synapse dies at startup with "Failed to load appservice ... 'NoneType'
+      # object has no attribute 'get'". Read-only: only the bridge writes it.
+      - ${HOME}/.mindroom/telegram-bridge/registration.yaml:/data/telegram-registration.yaml:ro
     entrypoint: /data/entrypoint.sh
     ports:
       - "8008:8008"
@@ -50,7 +59,42 @@ services:
       timeout: 10s
       retries: 5
 
+  # Adopted into compose on 2026-08-04. This container already carried the
+  # "matrix" compose project label but had no service definition here, so
+  # `docker compose restart` silently skipped it: the rest of the stack cycled
+  # while the bridge kept running hours-old state. Volumes match what the
+  # running container had, so adopting it preserves the bridge database.
+  telegram-bridge:
+    image: dock.mau.dev/mautrix/telegram:latest
+    container_name: mindroom-telegram-bridge
+    restart: unless-stopped
+    environment:
+      UID: 1337
+      GID: 1337
+      BRIDGEV2: 1
+    volumes:
+      - ${HOME}/.mindroom/telegram-bridge:/data
+      - tgbridge_db:/db
+    depends_on:
+      synapse:
+        condition: service_healthy
+
+  # Adopted into compose on 2026-08-04. This one had no compose project label at
+  # all, so it was invisible to every `docker compose` command. Browser-facing
+  # static UI: it reaches Synapse via the host on :8008, not container networking.
+  cinny:
+    image: ghcr.io/mindroom-ai/mindroom-chat:latest
+    container_name: mindroom-cinny-local
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ${HOME}/.mindroom/mindroom_data/local/cinny-config.json:/app/config.json
+
 volumes:
   postgres_data:
   redis_data:
   synapse_media:
+  # Pre-existing volume, created as matrix_tgbridge_db by the unmanaged bridge
+  # container; declared here so compose adopts it instead of making a new one.
+  tgbridge_db:
