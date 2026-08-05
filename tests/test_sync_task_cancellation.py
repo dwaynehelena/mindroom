@@ -14,7 +14,7 @@ import nio
 import pytest
 from structlog.testing import capture_logs
 
-from mindroom.bot import _SYNC_TIMELINE_LIMIT, AgentBot
+from mindroom.bot import _SYNC_TIMELINE_LIMIT, AgentBot, _classic_sync_rebuild_backoff_seconds
 from mindroom.bot_runtime_view import BotRuntimeState
 from mindroom.cancellation import (
     SYNC_RESTART_CANCEL_MSG,
@@ -1259,6 +1259,7 @@ async def test_full_state_only_after_successful_first_sync() -> None:
     bot.agent_name = "test_agent"
     bot.last_sync_time = None
     bot._first_sync_done = False
+    bot._classic_sync_rebuild_pending = False
     bot._sync_shutting_down = False
     bot._calls_reconcile_pending = False
     bot._room_member_join_hooks_armed = False
@@ -1282,6 +1283,115 @@ async def test_full_state_only_after_successful_first_sync() -> None:
     await AgentBot.sync_forever(bot)
 
     assert full_state_values == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_classic_rebuild_reenters_receive_loop_without_supervisor_return() -> None:
+    """A requested room-world rebuild must not escape to the retry supervisor."""
+    full_state_values: list[bool] = []
+    bot = MagicMock(spec=AgentBot)
+    bot.agent_name = "code"
+    bot.logger = MagicMock()
+    bot.running = True
+    bot._first_sync_done = True
+    bot._classic_sync_rebuild_pending = False
+    bot._classic_sync_rebuild_attempt = 0
+    bot.config = Config(matrix_sync=MatrixSyncConfig(mode="classic"))
+    bot.rooms = []
+
+    class FakeClient:
+        async def sync_forever(
+            self,
+            *,
+            timeout: int,  # noqa: ASYNC109, ARG002 - mirrors nio's long poll.
+            full_state: bool,
+            sync_filter: object = None,  # noqa: ARG002
+        ) -> None:
+            full_state_values.append(full_state)
+            if len(full_state_values) == 1:
+                bot._classic_sync_rebuild_pending = True
+                bot._classic_sync_rebuild_attempt = 1
+                return
+            bot._classic_sync_rebuild_pending = False
+            bot.running = False
+
+    bot.client = FakeClient()
+
+    await AgentBot.sync_forever(bot)
+
+    assert full_state_values == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_repeated_classic_rebuild_rejections_back_off_after_immediate_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A persistent rebuild failure must not spin full-state zero-timeout syncs."""
+    call_order: list[str] = []
+    bot = MagicMock(spec=AgentBot)
+    bot.agent_name = "code"
+    bot.logger = MagicMock()
+    bot.running = True
+    bot._first_sync_done = True
+    bot._classic_sync_rebuild_pending = False
+    bot._classic_sync_rebuild_attempt = 0
+    bot.config = Config(matrix_sync=MatrixSyncConfig(mode="classic"))
+    bot.rooms = []
+
+    class FakeClient:
+        async def sync_forever(
+            self,
+            *,
+            timeout: int,  # noqa: ASYNC109, ARG002 - mirrors nio's long poll.
+            full_state: bool,  # noqa: ARG002
+            sync_filter: object = None,  # noqa: ARG002
+        ) -> None:
+            call_order.append(f"sync-{len([item for item in call_order if item.startswith('sync-')]) + 1}")
+            sync_count = sum(item.startswith("sync-") for item in call_order)
+            if sync_count <= 2:
+                bot._classic_sync_rebuild_pending = True
+                bot._classic_sync_rebuild_attempt = sync_count
+                return
+            bot._classic_sync_rebuild_pending = False
+            bot.running = False
+
+    async def record_sleep(delay: float) -> None:
+        call_order.append(f"sleep-{delay}")
+
+    bot.client = FakeClient()
+    monkeypatch.setattr("mindroom.bot.asyncio.sleep", record_sleep)
+
+    await AgentBot.sync_forever(bot)
+
+    assert call_order == ["sync-1", "sync-2", "sleep-1.0", "sync-3"]
+
+
+def test_classic_rebuild_backoff_remains_capped_for_long_outages() -> None:
+    """Repeated rebuild failures cannot overflow the capped delay calculation."""
+    assert _classic_sync_rebuild_backoff_seconds(10_000) == 30.0
+
+
+@pytest.mark.asyncio
+async def test_classic_transport_rebuild_requests_full_state_without_restarting_lifecycle() -> None:
+    """A ready bot still requests full state when only nio's room world was reset."""
+    full_state_values: list[bool] = []
+
+    class FakeClient:
+        async def sync_forever(self, *, timeout: int, full_state: bool, sync_filter: object = None) -> None:  # noqa: ASYNC109, ARG002
+            full_state_values.append(full_state)
+            bot._classic_sync_rebuild_pending = False
+
+    bot = MagicMock(spec=AgentBot)
+    bot._first_sync_done = True
+    bot._classic_sync_rebuild_pending = True
+    bot.config = Config(matrix_sync=MatrixSyncConfig(mode="classic"))
+    bot.rooms = []
+    bot.client = FakeClient()
+
+    await AgentBot.sync_forever(bot)
+
+    assert full_state_values == [True]
+    assert bot._first_sync_done is True
 
 
 @pytest.mark.asyncio
@@ -1383,6 +1493,7 @@ async def test_default_sync_mode_is_classic_with_raised_timeline_limit() -> None
 
     bot = MagicMock(spec=AgentBot)
     bot._first_sync_done = True
+    bot._classic_sync_rebuild_pending = False
     bot._sync_shutting_down = False
     bot.config = Config()
     bot.rooms = []

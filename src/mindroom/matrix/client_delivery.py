@@ -7,7 +7,7 @@ import mimetypes
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import nio
@@ -125,6 +125,7 @@ async def _send_prepared_room_message(
     cache_bypass: bool,
     operation: str,
     retry_sync_recovery: bool,
+    transaction_id: str | None = None,
 ) -> object | None:
     """Send one prepared Matrix room message and normalize local delivery exceptions."""
 
@@ -155,10 +156,18 @@ async def _send_prepared_room_message(
             )
         # Bots have no interactive device-verification flow, so encrypted sends
         # always deliver to unverified devices.
+        if transaction_id is None:
+            return await client.room_send(
+                room_id=room_id,
+                message_type=message_type,
+                content=content_sent,
+                ignore_unverified_devices=True,
+            )
         return await client.room_send(
             room_id=room_id,
             message_type=message_type,
             content=content_sent,
+            tx_id=transaction_id,
             ignore_unverified_devices=True,
         )
 
@@ -167,14 +176,19 @@ async def _send_prepared_room_message(
     except asyncio.CancelledError:
         raise
     except Exception as error:
-        if retry_sync_recovery and isinstance(error, nio.SendRetryError):
-            return await _retry_prepared_room_message_after_sync_recovery(
-                send_once,
-                original_error=error,
-                room_id=room_id,
-                operation=operation,
-                cache_bypass=cache_bypass,
-            )
+        if isinstance(error, nio.SendRetryError):
+            try:
+                return await _retry_prepared_room_message_after_sync_recovery(
+                    send_once,
+                    original_error=error,
+                    room_id=room_id,
+                    operation=operation,
+                    cache_bypass=cache_bypass,
+                )
+            except nio.SendRetryError as retry_error:
+                if retry_sync_recovery:
+                    raise
+                error = retry_error
         _log_matrix_delivery_exception(
             error,
             room_id=room_id,
@@ -195,49 +209,100 @@ def _cached_rooms(client: nio.AsyncClient) -> Mapping[str, nio.MatrixRoom]:
     return rooms if isinstance(rooms, Mapping) else {}
 
 
-def _can_send_to_encrypted_room(client: nio.AsyncClient, room_id: str, *, operation: str) -> bool:
-    """Return whether one outbound room operation can proceed with current nio E2EE support."""
-    room = cached_room(client, room_id)
-    if room is None or not room.encrypted or crypto.ENCRYPTION_ENABLED:
+def _has_encrypted_delivery_support(
+    client: nio.AsyncClient,
+    *,
+    room_id: str,
+    operation: str,
+) -> bool:
+    """Return whether nio can protect one known-encrypted outbound payload."""
+    if crypto.ENCRYPTION_ENABLED and client.olm is not None:
         return True
     logger.error(
         "matrix_e2ee_support_required",
         room_id=room_id,
         operation=operation,
-        hint="Reinstall MindRoom dependencies so `mindroom-nio[e2e]` is available for encrypted Matrix rooms.",
+        hint="Ensure `mindroom-nio[e2e]` is installed and the Matrix encryption store initialized.",
     )
     return False
 
 
-async def _cached_or_remote_room_encrypted(client: nio.AsyncClient, room_id: str, *, operation: str) -> bool | None:
-    """Return room encryption state, failing closed when an uncached room is encrypted."""
+def _can_send_to_encrypted_room(client: nio.AsyncClient, room_id: str, *, operation: str) -> bool:
+    """Return whether one outbound room operation can proceed with current nio E2EE support."""
     room = cached_room(client, room_id)
-    if room is not None:
-        return bool(room.encrypted)
-
-    encryption_state = await client.room_get_state_event(room_id, "m.room.encryption")
-    if isinstance(encryption_state, nio.RoomGetStateEventResponse):
-        logger.error(
-            "matrix_encrypted_media_upload_requires_synced_room_cache",
+    return (
+        room is None
+        or not room.encrypted
+        or _has_encrypted_delivery_support(
+            client,
             room_id=room_id,
             operation=operation,
-            hint="Wait for initial sync to populate nio's room cache before uploading encrypted media.",
         )
-        return None
-    if isinstance(encryption_state, nio.RoomGetStateEventError) and encryption_state.status_code == "M_NOT_FOUND":
-        return False
-    logger.error(
-        "matrix_media_upload_requires_known_encryption_state",
+    )
+
+
+async def resolve_room_encryption_for_delivery(
+    client: nio.AsyncClient,
+    room_id: str,
+    *,
+    operation: str,
+) -> bool | None:
+    """Return authoritative room encryption state for safe outbound preparation."""
+    room = cached_room(client, room_id)
+    if room is not None:
+        room_encrypted = bool(room.encrypted)
+    else:
+        encryption_state = await client.room_get_state_event(room_id, "m.room.encryption")
+        if isinstance(encryption_state, nio.RoomGetStateEventResponse):
+            room_encrypted = True
+        elif isinstance(encryption_state, nio.RoomGetStateEventError) and encryption_state.status_code == "M_NOT_FOUND":
+            room_encrypted = False
+        else:
+            logger.error(
+                "matrix_delivery_requires_known_encryption_state",
+                room_id=room_id,
+                operation=operation,
+                hint="Unable to determine whether the room is encrypted while nio's room cache is empty.",
+            )
+            return None
+
+    if room_encrypted and not _has_encrypted_delivery_support(
+        client,
         room_id=room_id,
         operation=operation,
-        hint="Unable to determine whether the room is encrypted while nio's room cache is empty.",
-    )
-    return None
+    ):
+        return None
+    return room_encrypted
 
 
 def can_send_to_encrypted_room(client: nio.AsyncClient, room_id: str, *, operation: str) -> bool:
     """Return whether one outbound Matrix operation can safely proceed."""
     return _can_send_to_encrypted_room(client, room_id, operation=operation)
+
+
+async def send_room_event_result(
+    client: nio.AsyncClient,
+    room_id: str,
+    message_type: str,
+    content: dict[str, Any],
+    *,
+    transaction_id: str | None = None,
+    operation: str = "send_room_event",
+) -> nio.RoomSendResponse | nio.RoomSendError | None:
+    """Send one already-built room event through bounded sync recovery."""
+    if not _can_send_to_encrypted_room(client, room_id, operation=operation):
+        return None
+    response = await _send_prepared_room_message(
+        client,
+        room_id,
+        content,
+        message_type=message_type,
+        cache_bypass=False,
+        operation=operation,
+        retry_sync_recovery=False,
+        transaction_id=transaction_id,
+    )
+    return cast("nio.RoomSendResponse | nio.RoomSendError | None", response)
 
 
 async def send_message_result(
@@ -253,28 +318,18 @@ async def send_message_result(
         return None
 
     rooms = client.rooms
-    room = rooms.get(room_id) if isinstance(rooms, Mapping) else None
-    cache_bypass = isinstance(rooms, Mapping) and room is None
-    if cache_bypass:
-        encryption_state = await client.room_get_state_event(room_id, "m.room.encryption")
-        if isinstance(encryption_state, nio.RoomGetStateEventResponse):
-            logger.error(
-                "matrix_encrypted_room_send_requires_synced_room_cache",
-                room_id=room_id,
-                operation=operation,
-                hint="Wait for initial sync to populate nio's room cache before sending to encrypted rooms.",
-            )
+    cache_bypass = False
+    room_encryption_override: bool | None = None
+    if isinstance(rooms, Mapping):
+        room = rooms.get(room_id)
+        room_encryption_override = await resolve_room_encryption_for_delivery(
+            client,
+            room_id,
+            operation=operation,
+        )
+        if room_encryption_override is None:
             return None
-        if not (
-            isinstance(encryption_state, nio.RoomGetStateEventError) and encryption_state.status_code == "M_NOT_FOUND"
-        ):
-            logger.error(
-                "matrix_room_send_requires_known_encryption_state",
-                room_id=room_id,
-                operation=operation,
-                hint="Unable to determine whether the room is encrypted while nio's room cache is empty.",
-            )
-            return None
+        cache_bypass = room is None and not room_encryption_override
 
     message_type = "m.room.message"
     emit_timing_event(
@@ -283,7 +338,12 @@ async def send_message_result(
         room_id=room_id,
         message_type=message_type,
     )
-    content_sent = await prepare_large_message(client, room_id, content)
+    content_sent = await prepare_large_message(
+        client,
+        room_id,
+        content,
+        room_encrypted=room_encryption_override,
+    )
     emit_timing_event(
         "Matrix send timing",
         phase="prepare_finish",
@@ -390,7 +450,7 @@ async def _upload_media_bytes_as_mxc(
 ) -> tuple[str | None, dict[str, Any] | None]:
     """Upload an in-memory Matrix media payload as MXC, encrypting for encrypted rooms."""
     info: dict[str, Any] = {"size": len(media_bytes), "mimetype": mimetype}
-    room_encrypted = await _cached_or_remote_room_encrypted(client, room_id, operation="upload_media_bytes")
+    room_encrypted = await resolve_room_encryption_for_delivery(client, room_id, operation="upload_media_bytes")
     if room_encrypted is None:
         return None, None
     upload_bytes = media_bytes
@@ -704,8 +764,10 @@ __all__ = [
     "cached_room",
     "can_send_to_encrypted_room",
     "edit_message_result",
+    "resolve_room_encryption_for_delivery",
     "send_audio_message",
     "send_file_message",
     "send_message_result",
+    "send_room_event_result",
     "send_runtime_encrypted_media_message",
 ]

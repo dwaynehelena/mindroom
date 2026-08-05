@@ -24,7 +24,13 @@ from mindroom.hooks import EVENT_ROOM_MEMBER_JOINED, HookRegistry, RoomMemberJoi
 from mindroom.matrix import room_member_joins
 from mindroom.matrix.sync_certification import SyncCacheWriteResult, SyncCheckpoint, SyncTrustState
 from mindroom.matrix.users import AgentMatrixUser
-from tests.conftest import TEST_PASSWORD, bind_runtime_paths, install_runtime_cache_support, test_runtime_paths
+from tests.conftest import (
+    TEST_PASSWORD,
+    bind_runtime_paths,
+    install_runtime_cache_support,
+    make_matrix_client_mock,
+    test_runtime_paths,
+)
 from tests.identity_helpers import persist_entity_accounts
 from tests.sync_continuity_helpers import load_sync_checkpoint
 
@@ -124,7 +130,7 @@ def _router_bot(
     persist_entity_accounts(config, runtime_paths, usernames={ROUTER_AGENT_NAME: "mindroom_router"})
     bot = AgentBot(_router_user(), tmp_path, config=config, runtime_paths=runtime_paths)
     install_runtime_cache_support(bot)
-    bot.client = MagicMock()
+    bot.client = make_matrix_client_mock(user_id=bot.agent_user.user_id)
     bot.client.homeserver = "http://localhost:8008"
     bot._first_sync_done = True
     bot._room_member_join_hooks_armed = True
@@ -454,8 +460,7 @@ async def test_sync_state_marker_failure_blocks_checkpoint_certification(
         )
 
     assert load_sync_checkpoint(tmp_path, bot.agent_name) is None
-    assert bot.client.next_batch == "s_after_marker_failure"
-    assert bot._sync_cache_trust.rewind_is_deferred_until_recovery()
+    assert bot.client.next_batch == (retry_token or "")
 
 
 @pytest.mark.asyncio
@@ -486,8 +491,8 @@ async def test_sync_room_lifecycle_persist_failure_rewinds_once(
         message = "dispatch database unavailable"
         raise OSError(message)
 
-    persist_failure = MagicMock(wraps=bot._rewind_sync_after_pre_certification_failure)
-    bot._dispatch_obligation_runner.on_persist_failure = persist_failure
+    reset = AsyncMock(wraps=bot._reset_classic_sync_state)
+    monkeypatch.setattr(bot, "_reset_classic_sync_state", reset)
     monkeypatch.setattr(bot._dispatch_obligation_store, "create_pending", fail_create)
 
     with pytest.raises(OSError, match="dispatch database unavailable"):
@@ -498,7 +503,7 @@ async def test_sync_room_lifecycle_persist_failure_rewinds_once(
             ),
         )
 
-    persist_failure.assert_called_once_with()
+    reset.assert_awaited_once_with(force=True)
     assert bot.client.next_batch == "s_before_failure"
 
 
@@ -635,6 +640,7 @@ async def test_router_emits_room_member_joined_from_first_restored_token_sync_ti
     bot._first_sync_done = False
     bot._room_member_join_hooks_armed = False
     bot._sync_cache_trust.state = SyncTrustState.PENDING
+    bot._sync_cache_trust.checkpoint = SyncCheckpoint("s_restored")
     bot.client.rooms = {room.room_id: room}
     bot.client.next_batch = "s_restored"
     bot.hook_registry = HookRegistry.from_plugins([_plugin("onboarding", [joined])])
@@ -656,6 +662,73 @@ async def test_router_emits_room_member_joined_from_first_restored_token_sync_ti
     )
 
     assert seen == ["$catchup-join"]
+
+
+@pytest.mark.asyncio
+async def test_router_replays_failed_live_join_admission_after_classic_reset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reset from a certified checkpoint must re-admit its catch-up timeline join."""
+    seen: list[str] = []
+
+    @hook(EVENT_ROOM_MEMBER_JOINED)
+    async def joined(ctx: RoomMemberJoinedContext) -> None:
+        seen.append(ctx.event_id)
+
+    bot = _router_bot(tmp_path)
+    room = _room()
+    bot._first_sync_done = True
+    bot._room_member_join_hooks_armed = True
+    bot._sync_cache_trust.state = SyncTrustState.CERTIFIED
+    bot._sync_cache_trust.checkpoint = SyncCheckpoint("s_before_join")
+    bot.client.rooms = {room.room_id: room}
+    bot.client.next_batch = "s_after_join"
+    bot.client.has_uncommitted_classic_sync_state = True
+    bot.hook_registry = HookRegistry.from_plugins([_plugin("onboarding", [joined])])
+    monkeypatch.setattr(
+        bot._conversation_cache,
+        "cache_sync_timeline_for_certification",
+        AsyncMock(
+            side_effect=[
+                SyncCacheWriteResult(complete=True),
+                SyncCacheWriteResult(complete=True),
+            ],
+        ),
+    )
+    join_event = _room_member_event(
+        event_id="$replayed-live-join",
+        prev_membership=None,
+    )
+    rejected_response = _sync_response_with_state(
+        room.room_id,
+        [],
+        timeline_events=[join_event],
+    )
+    rejected_response.next_batch = "s_after_join"
+
+    bot._record_dispatch_persist_failure()
+    await bot._on_sync_response(rejected_response)
+
+    assert seen == []
+    assert bot._first_sync_done is True
+    assert bot._classic_sync_rebuild_pending is True
+    assert bot.client.next_batch == "s_before_join"
+
+    bot.client.rooms = {room.room_id: room}
+    bot.client.next_batch = "s_after_join"
+    bot.client.has_uncommitted_classic_sync_state = True
+    rebuilt_response = _sync_response_with_state(
+        room.room_id,
+        [join_event],
+        timeline_events=[],
+    )
+    rebuilt_response.next_batch = "s_after_join"
+    await bot._on_sync_response(rebuilt_response)
+
+    assert seen == ["$replayed-live-join"]
+    assert bot._room_member_join_hooks_armed is True
+    assert bot._classic_sync_rebuild_pending is False
 
 
 @pytest.mark.asyncio
@@ -955,6 +1028,7 @@ async def test_unknown_pos_resync_does_not_emit_room_member_joined_snapshot(
     sync_error.status_code = "M_UNKNOWN_POS"
 
     await bot._on_sync_error(sync_error)
+    bot.client.rooms = {room.room_id: room}
     assert (
         bot._dispatch_obligation_runner._admission_kind(
             _room_member_event(event_id="$timeline-snapshot"),
@@ -1116,7 +1190,8 @@ async def test_uncertain_first_sync_reset_does_not_emit_room_member_joined_snaps
     )
 
     await bot._on_sync_response(_sync_response_with_state(room.room_id, []))
-    assert bot.client.next_batch is None
+    assert bot.client.next_batch == ""
+    bot.client.rooms = {room.room_id: room}
 
     assert (
         bot._dispatch_obligation_runner._admission_kind(
