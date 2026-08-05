@@ -327,6 +327,89 @@ async def test_real_nio_initial_history_is_fenced_and_continuation_is_live(
 
 
 @pytest.mark.asyncio
+async def test_cold_room_window_reentry_message_is_dispatched(
+    tmp_path: Path,
+) -> None:
+    """A cold room's window re-entry message must reach its message callback.
+
+    Regression (2026-08-03, mindroom.chat "Test" room): rooms outside the
+    sliding-sync list window came back flagged ``initial`` without
+    ``num_live``, so nio correctly classified the ambiguous timeline as
+    HISTORY and the cold-history fence dropped it. Tuwunel now identifies
+    the newly arrived tail with ``num_live``, which nio must classify as LIVE.
+    """
+    store = DispatchObligationStore(
+        tracking_path=tmp_path,
+        principal_id="@code:example.org",
+        entity_name="code",
+    )
+    fence = ColdHistoryFence(store)
+    seen: list[str] = []
+
+    async def callback(
+        _room: nio.MatrixRoom,
+        event: nio.Event,
+    ) -> DispatchCallbackResult:
+        seen.append(event.event_id)
+        return DispatchCallbackResult.SUCCEEDED
+
+    runner = _runner(store, fence, callback)
+    client = nio.AsyncClient(
+        "https://example.org",
+        "@code:example.org",
+        config=nio.AsyncClientConfig(
+            encryption_enabled=False,
+            backfill_limited_timelines=True,
+        ),
+    )
+    owner = object()
+    runner.register_source_callbacks(client, owner=owner)
+
+    def sliding(pos: str, rooms: dict[str, object]) -> nio.SlidingSyncResponse:
+        response = nio.SlidingSyncResponse.from_dict({"pos": pos, "rooms": rooms})
+        assert isinstance(response, nio.SlidingSyncResponse)
+        return response
+
+    try:
+        # Ordinary continuation while the room is inside the list window.
+        await client.receive_response(
+            sliding(
+                "s1",
+                {
+                    "!room:example.org": {
+                        "membership": "join",
+                        "timeline": [_message("$warm").source],
+                    },
+                },
+            ),
+        )
+        assert await wait_for_background_tasks(timeout=1, owner=owner)
+        assert seen == ["$warm"]
+        # The room falls out of the window; nothing is delivered for it.
+        await client.receive_response(sliding("s2", {}))
+        # A new user message pulls the room back in. The room is initial on
+        # this connection, while num_live identifies its newly arrived tail.
+        await client.receive_response(
+            sliding(
+                "s3",
+                {
+                    "!room:example.org": {
+                        "initial": True,
+                        "membership": "join",
+                        "num_live": 1,
+                        "timeline": [_message("$cold_mention").source],
+                    },
+                },
+            ),
+        )
+        assert await wait_for_background_tasks(timeout=1, owner=owner)
+    finally:
+        await client.close()
+
+    assert seen == ["$warm", "$cold_mention"]
+
+
+@pytest.mark.asyncio
 async def test_direct_recovery_bypasses_timeline_provenance(
     tmp_path: Path,
 ) -> None:
