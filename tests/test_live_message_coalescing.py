@@ -32,11 +32,15 @@ from mindroom.constants import (
     ORIGINAL_SENDER_KEY,
     SKIP_MENTIONS_KEY,
     SOURCE_KIND_KEY,
+    STREAM_STATUS_KEY,
+    STREAM_STATUS_PENDING,
+    STREAM_STATUS_STREAMING,
     VISIBLE_ROUTER_VOICE_ECHO_KEY,
     VOICE_RAW_AUDIO_FALLBACK_KEY,
     VOICE_TRANSCRIPT_KEY,
 )
 from mindroom.conversation_resolver import MessageContext
+from mindroom.dispatch_callback_outcome import TurnDispatchOutcome
 from mindroom.dispatch_handoff import (
     DispatchEvent,
     DispatchIngressMetadata,
@@ -84,6 +88,7 @@ from tests.conftest import (
     dispatch_context_result,
     install_generate_response_mock,
     install_send_response_mock,
+    make_conversation_cache_mock,
     make_matrix_client_mock,
     message_origin,
     prepare_payload_via_seam,
@@ -7125,6 +7130,103 @@ async def test_sidecar_gate_failure_retries_original_media_callback(tmp_path: Pa
     assert outcome is _IngressAdmissionOutcome.ADMITTED
     assert drain_result.dispatch_failure_count == 1
     retry_pending_source.assert_called_once_with(sidecar.event_id, DispatchCallbackKind.MEDIA)
+
+
+@pytest.mark.asyncio
+async def test_router_caches_agent_pending_thread_placeholder_before_ignoring_dispatch(tmp_path: Path) -> None:
+    """Keep an active agent visible to router history while its response is still streaming."""
+    bot = _make_bot(tmp_path, agent_name="router")
+    room = _make_room()
+    placeholder = _text_event(
+        event_id="$agent-placeholder",
+        body="Thinking...",
+        sender="@mindroom_test_agent:localhost",
+        thread_id="$thread",
+    )
+    content = placeholder.source["content"]
+    assert isinstance(content, dict)
+    content[STREAM_STATUS_KEY] = STREAM_STATUS_PENDING
+    conversation_cache = make_conversation_cache_mock()
+    controller = replace_turn_controller_deps(bot, conversation_cache=conversation_cache)
+
+    outcome = await controller.handle_text_event(room, placeholder)
+
+    assert outcome is TurnDispatchOutcome.INTENTIONALLY_IGNORED
+    conversation_cache.append_live_event.assert_awaited_once_with(
+        room.room_id,
+        placeholder,
+        event_info=EventInfo.from_event(placeholder.source),
+    )
+
+
+@pytest.mark.asyncio
+async def test_router_skips_intermediate_agent_stream_edit_without_precheck_or_cache(tmp_path: Path) -> None:
+    """Keep progressive stream edits on the pre-existing fast ignore path."""
+    bot = _make_bot(tmp_path, agent_name="router")
+    room = _make_room()
+    streaming_edit = _text_event(
+        event_id="$agent-stream-edit",
+        body="* partial response",
+        sender="@mindroom_test_agent:localhost",
+    )
+    content = streaming_edit.source["content"]
+    assert isinstance(content, dict)
+    content[STREAM_STATUS_KEY] = STREAM_STATUS_STREAMING
+    content["m.new_content"] = {
+        "msgtype": "m.text",
+        "body": "partial response",
+        STREAM_STATUS_KEY: STREAM_STATUS_STREAMING,
+    }
+    content["m.relates_to"] = {
+        "rel_type": "m.replace",
+        "event_id": "$agent-placeholder",
+    }
+    assert EventInfo.from_event(streaming_edit.source).is_edit
+    conversation_cache = make_conversation_cache_mock()
+    controller = replace_turn_controller_deps(bot, conversation_cache=conversation_cache)
+
+    with patch(
+        "mindroom.turn_controller.TurnController._precheck_dispatch_event",
+        side_effect=AssertionError("intermediate stream edits must skip ingress precheck"),
+    ) as precheck:
+        outcome = await controller.handle_text_event(room, streaming_edit)
+
+    assert outcome is TurnDispatchOutcome.INTENTIONALLY_IGNORED
+    precheck.assert_not_called()
+    conversation_cache.append_live_event.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "sender",
+    [
+        pytest.param("@user:localhost", id="accepted-human"),
+        pytest.param("@mindroom_router:localhost", id="rejected-self"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_router_does_not_cache_nonterminal_stream_without_accepted_managed_sender(
+    tmp_path: Path,
+    sender: str,
+) -> None:
+    """Reject cache writes unless ingress accepts a managed entity's stream."""
+    bot = _make_bot(tmp_path, agent_name="router")
+    room = _make_room()
+    placeholder = _text_event(
+        event_id="$untrusted-placeholder",
+        body="Thinking...",
+        sender=sender,
+        thread_id="$thread",
+    )
+    content = placeholder.source["content"]
+    assert isinstance(content, dict)
+    content[STREAM_STATUS_KEY] = STREAM_STATUS_PENDING
+    conversation_cache = make_conversation_cache_mock()
+    controller = replace_turn_controller_deps(bot, conversation_cache=conversation_cache)
+
+    outcome = await controller.handle_text_event(room, placeholder)
+
+    assert outcome is TurnDispatchOutcome.INTENTIONALLY_IGNORED
+    conversation_cache.append_live_event.assert_not_awaited()
 
 
 @pytest.mark.asyncio
