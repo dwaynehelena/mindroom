@@ -25,6 +25,7 @@ from mindroom.agent_policy import (
     build_agent_policy_seeds,
     get_agent_delegation_closure,
     get_unsupported_team_agents,
+    purge_agent_from_delegation_closures,
     resolve_agent_policy_from_data,
     resolve_private_knowledge_base_agent,
     unsupported_team_agent_message,
@@ -1634,6 +1635,29 @@ class Config(BaseModel):
             ),
             closures=closures,
         )
+
+    def purge_agent_references(
+        self,
+        agent_name: str,
+        *,
+        closures: dict[str, frozenset[str]] | None = None,
+    ) -> None:
+        """Purge one removed agent from every persisted reference table.
+
+        After an agent is removed, stale references to it can survive in three
+        places: delegation closures (cached reachability sets), team member
+        lists, and other agents' ``delegate_to`` lists. Each of these would
+        otherwise keep the removed agent reachable or materializable. This
+        method rewrites them in place so no dangling reference survives.
+        """
+        if closures is not None:
+            purge_agent_from_delegation_closures(agent_name, closures)
+        for team_config in self.teams.values():
+            if agent_name in team_config.agents:
+                team_config.agents = [member for member in team_config.agents if member != agent_name]
+        for agent_config in self.agents.values():
+            if agent_name in agent_config.delegate_to:
+                agent_config.delegate_to = [target for target in agent_config.delegate_to if target != agent_name]
 
     def get_unsupported_team_agents(
         self,

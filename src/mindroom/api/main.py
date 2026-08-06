@@ -772,6 +772,34 @@ def _delete_section_entity(
     if section not in candidate_config or entity_id not in candidate_config[section]:
         raise HTTPException(status_code=404, detail=not_found_detail)
     del candidate_config[section][entity_id]
+    if section == "agents":
+        _purge_agent_references(candidate_config, entity_id)
+
+
+def _purge_agent_references(candidate_config: dict[str, Any], agent_name: str) -> None:
+    """Remove one deleted agent from every persisted reference table.
+
+    Deleting an agent leaves dangling references in team member lists and in
+    other agents' ``delegate_to`` lists. Without purging them, the next config
+    validation would fail (unknown team member / unknown delegate target) and
+    any cached delegation closure would keep the removed agent reachable.
+    """
+    teams = candidate_config.get("teams")
+    if isinstance(teams, dict):
+        for team_data in teams.values():
+            if not isinstance(team_data, dict):
+                continue
+            members = team_data.get("agents")
+            if isinstance(members, list) and agent_name in members:
+                team_data["agents"] = [member for member in members if member != agent_name]
+    agents = candidate_config.get("agents")
+    if isinstance(agents, dict):
+        for agent_data in agents.values():
+            if not isinstance(agent_data, dict):
+                continue
+            delegate_to = agent_data.get("delegate_to")
+            if isinstance(delegate_to, list) and agent_name in delegate_to:
+                agent_data["delegate_to"] = [target for target in delegate_to if target != agent_name]
 
 
 def _set_config_generation_header(response: Response, generation: int) -> None:

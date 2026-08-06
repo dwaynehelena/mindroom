@@ -230,6 +230,24 @@ def get_agent_delegation_closure(
     return result
 
 
+def purge_agent_from_delegation_closures(
+    agent_name: str,
+    closures: dict[str, frozenset[str]],
+) -> None:
+    """Purge one removed agent from a delegation-closure cache.
+
+    After an agent is removed, any cached closure that still names it is a
+    dangling reference: downstream consumers (team eligibility, unsupported
+    team members, OpenAI-compat routing) would otherwise keep treating the
+    removed agent as reachable. Drop the removed agent's own entry and rewrite
+    every other cached closure to exclude it so no stale reference survives.
+    """
+    closures.pop(agent_name, None)
+    for cached_agent, closure in list(closures.items()):
+        if agent_name in closure:
+            closures[cached_agent] = closure - {agent_name}
+
+
 def _get_private_team_targets(
     agent_name: str,
     seeds: Mapping[str, AgentPolicySeed],
@@ -382,6 +400,7 @@ __all__ = [
     "dashboard_credentials_supported_for_scope",
     "get_agent_delegation_closure",
     "get_unsupported_team_agents",
+    "purge_agent_from_delegation_closures",
     "resolve_agent_policy_from_data",
     "resolve_agent_policy_index",
     "resolve_private_knowledge_base_agent",
