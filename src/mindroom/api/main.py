@@ -5,6 +5,7 @@ import asyncio
 import threading
 from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import urlsplit
 
@@ -13,12 +14,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+import base64
+
 from mindroom import constants, file_watcher
 from mindroom.agent_policy import build_agent_policy_seeds, resolve_agent_policy_index
 from mindroom.api import config_lifecycle
 from mindroom.api.auth import ApiAuthState, verify_user  # noqa: F401
 from mindroom.api.auth import router as auth_router
 from mindroom.api.config_lifecycle import ApiSnapshot, ApiState, ConfigLoadResult  # noqa: F401
+from mindroom.api.edge_fleet import create_edge_fleet_admin_router, create_edge_fleet_router
+from mindroom.edge_fleet import EdgeFleet, EnrollmentAuthority
 
 # Import routers
 from mindroom.api.credentials import router as credentials_router
@@ -298,6 +303,69 @@ def _app_runtime_paths(api_app: FastAPI) -> constants.RuntimePaths:
     return _app_context(api_app).runtime_paths
 
 
+# ---------------------------------------------------------------------------
+# Edge Fleet lifecycle
+# ---------------------------------------------------------------------------
+
+_EDGE_FLEET_ENABLED_ENV = "MINDROOM_EDGE_FLEET_ENABLED"
+_EDGE_FLEET_PATH_ENV = "MINDROOM_EDGE_FLEET_PATH"
+_EDGE_FLEET_ENROLLMENT_KEY_ENV = "MINDROOM_EDGE_FLEET_ENROLLMENT_KEY"
+
+
+def _edge_fleet_from_runtime_paths(runtime_paths: constants.RuntimePaths) -> EdgeFleet | None:
+    """Create an EdgeFleet instance from runtime configuration, or None if disabled."""
+    enabled = runtime_paths.env_flag(_EDGE_FLEET_ENABLED_ENV, default=False)
+    if not enabled:
+        return None
+
+    raw_key = runtime_paths.env_value(_EDGE_FLEET_ENROLLMENT_KEY_ENV)
+    if not raw_key:
+        logger.warning("Edge fleet is enabled but %s is not set — disabling", _EDGE_FLEET_ENROLLMENT_KEY_ENV)
+        return None
+
+    try:
+        key = base64.urlsafe_b64decode(raw_key + "=" * (-len(raw_key) % 4))
+    except (ValueError, TypeError) as exc:
+        logger.error("Edge fleet enrollment key is not valid Base64: %s", exc)
+        return None
+
+    if len(key) < 32:
+        logger.error("Edge fleet enrollment key must decode to at least 32 bytes (got %d)", len(key))
+        return None
+
+    fleet_path_str = runtime_paths.env_value(_EDGE_FLEET_PATH_ENV)
+    if fleet_path_str:
+        fleet_path = Path(fleet_path_str)
+    else:
+        fleet_path = runtime_paths.storage_root / "edge_fleet.db"
+
+    authority = EnrollmentAuthority(key)
+    fleet = EdgeFleet(fleet_path, authority)
+    logger.info(
+        "Edge fleet enabled",
+        extra={"path": str(fleet_path), "key_length": len(key)},
+    )
+    return fleet
+
+
+def _mount_edge_fleet(api_app: FastAPI, fleet: EdgeFleet | None) -> None:
+    """Mount edge fleet routers if a fleet instance is provided."""
+    if fleet is None:
+        logger.info("Edge fleet is disabled — no routes mounted")
+        return
+
+    # Node-facing router (Ed25519 authenticated — no dashboard auth)
+    api_app.include_router(create_edge_fleet_router(fleet))
+
+    # Admin router (dashboard auth required)
+    api_app.include_router(
+        create_edge_fleet_admin_router(fleet),
+        dependencies=[Depends(verify_user)],
+    )
+
+    logger.info("Edge fleet routes mounted")
+
+
 def initialize_api_app(api_app: FastAPI, runtime_paths: constants.RuntimePaths) -> None:
     """Initialize one API app instance with explicit runtime-bound state."""
     app_state = config_lifecycle.ensure_app_state(api_app)
@@ -507,6 +575,15 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         "Published knowledge index refresh is scheduled by Git polling, filesystem watch, on access, or explicit API actions",
     )
 
+    # Open edge fleet database if enabled
+    edge_fleet = _edge_fleet_instance
+    if edge_fleet is not None:
+        try:
+            await edge_fleet.open()
+            logger.info("Edge fleet database opened")
+        except Exception as exc:
+            logger.error("Failed to open edge fleet database: %s", exc)
+
     stop_event = asyncio.Event()
     watch_task = asyncio.create_task(_watch_config(stop_event, _app))
     worker_cleanup_task = asyncio.create_task(_worker_cleanup_loop(stop_event, _app))
@@ -522,6 +599,12 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await worker_cleanup_task
     if standalone_knowledge_source_watcher is not None:
         await standalone_knowledge_source_watcher.shutdown()
+    if edge_fleet is not None:
+        try:
+            await edge_fleet.close()
+            logger.info("Edge fleet database closed")
+        except Exception as exc:
+            logger.error("Failed to close edge fleet database: %s", exc)
     if api_owned_knowledge_refresh_scheduler is not None:
         await api_owned_knowledge_refresh_scheduler.shutdown()
 
@@ -713,10 +796,14 @@ app.include_router(report_publishing_public_router)
 app.include_router(external_triggers_router)
 app.include_router(dynamic_workflows_router, dependencies=[Depends(verify_user)])
 
+# Mount edge fleet (disabled by default — enable via MINDROOM_EDGE_FLEET_ENABLED=true)
+_edge_fleet_instance = _edge_fleet_from_runtime_paths(_runtime_paths)
+_mount_edge_fleet(app, _edge_fleet_instance)
+
 
 @app.get("/api/health")
 async def health_check(request: Request) -> JSONResponse:
-    """Health check endpoint with Matrix sync-loop liveness."""
+    """Health check endpoint with Matrix sync-loop liveness and edge fleet status."""
     runtime_state = get_runtime_state()
     runtime_paths = _api_runtime_paths(request)
     sync_health = get_matrix_sync_health_snapshot(
@@ -737,6 +824,28 @@ async def health_check(request: Request) -> JSONResponse:
         # Additive diagnostic only: a broken embedder degrades semantic search
         # but must not flip liveness and restart an otherwise usable runtime.
         response["embedder"] = {"status": "failing", "detail": embedder_failure}
+
+    # Edge fleet health (additive — does not flip liveness)
+    edge_fleet = _edge_fleet_instance
+    if edge_fleet is not None:
+        try:
+            from datetime import UTC, datetime, timedelta
+
+            healthy = await edge_fleet.healthy_nodes(
+                observed_at=datetime.now(UTC),
+                max_age=timedelta(seconds=600),
+            )
+            response["edge_fleet"] = {
+                "enabled": True,
+                "healthy_nodes": len(healthy),
+            }
+        except Exception as exc:
+            response["edge_fleet"] = {
+                "enabled": True,
+                "error": str(exc),
+            }
+    else:
+        response["edge_fleet"] = {"enabled": False}
 
     if runtime_state.phase == "ready" and not sync_health.is_healthy:
         response["status"] = "unhealthy"
