@@ -14,6 +14,7 @@ from mindroom.provenance_memory import (
     ProvenanceMemoryStore,
     RuntimeTarget,
 )
+from mindroom.provenance_overflow import ProvenanceOverflowStore
 
 _ENV_KEYS = (
     "MINDROOM_PROVENANCE_DB",
@@ -23,6 +24,12 @@ _ENV_KEYS = (
     "MINDROOM_PROVENANCE_HERMES_PYTHON",
     "MINDROOM_PROVENANCE_HERMES_WORKER",
 )
+
+# Optional: path to the Tier-2 external overflow store. When unset it defaults
+# to a sibling file next to the provenance DB (``<provenance-db>.overflow.db``),
+# so the externalization path is always available without breaking callers that
+# only configured the provenance DB.
+_OVERFLOW_DB_ENV = "MINDROOM_PROVENANCE_OVERFLOW_DB"
 
 
 def _required_path(name: str, *, directory: bool = False) -> Path:
@@ -47,6 +54,10 @@ async def _main() -> None:
             raise RuntimeError(message)
     store = ProvenanceMemoryStore(_required_path("MINDROOM_PROVENANCE_DB"))
     await store.open()
+    provenance_db = Path(os.environ["MINDROOM_PROVENANCE_DB"])
+    overflow_path = os.environ.get(_OVERFLOW_DB_ENV) or str(provenance_db.with_name(f"{provenance_db.name}.overflow.db"))
+    overflow = ProvenanceOverflowStore(overflow_path)
+    await overflow.open()
     try:
         quarantined = await store.recover_uncertain()
         handlers: dict[RuntimeTarget, PropagationHandler] = {
@@ -64,6 +75,7 @@ async def _main() -> None:
                     str(_required_path("MINDROOM_PROVENANCE_HERMES_WORKER")),
                 ),
                 _required_path("MINDROOM_PROVENANCE_HERMES_HOME", directory=True),
+                overflow_store=overflow,
             ),
         }
         outcomes = await MemoryPropagator(store, handlers).drain()
@@ -76,6 +88,7 @@ async def _main() -> None:
             flush=True,
         )
     finally:
+        await overflow.close()
         await store.close()
 
 
