@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -569,6 +570,45 @@ class TestMemoryConfig:
         assert result is expected_memory
         mock_ensure_sentence_transformers_dependencies.assert_called_once_with(_runtime_paths(tmp_path))
         mock_from_config.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("mindroom.memory.config.ensure_sentence_transformers_dependencies")
+    @patch.object(AsyncMemory, "from_config")
+    async def test_create_memory_instance_offloads_blocking_construction_off_event_loop(
+        self,
+        mock_from_config: MagicMock,
+        mock_ensure_sentence_transformers_dependencies: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Mem0 construction must run in a worker thread, never on the event loop."""
+        memory = MemoryConfig(
+            embedder=_MemoryEmbedderConfig(
+                provider="sentence_transformers",
+                config=EmbedderConfig(model="sentence-transformers/all-MiniLM-L6-v2"),
+            ),
+            llm=None,
+        )
+        config = Config(memory=memory, router=RouterConfig(model="default"))
+        expected_memory = SimpleNamespace(vector_store=object())
+        mock_from_config.return_value = expected_memory
+
+        # Record the thread that runs the blocking construction. If it were
+        # executed on the event loop it would be the same thread as the test's
+        # running loop; offloading must move it to a worker thread.
+        construction_thread: list[threading.Thread | None] = []
+
+        def _capture_thread(*_args: object, **_kwargs: object) -> object:
+            construction_thread.append(threading.current_thread())
+            return expected_memory
+
+        mock_from_config.side_effect = _capture_thread
+
+        result = await create_memory_instance(tmp_path / "memory", config, _runtime_paths(tmp_path))
+
+        assert result is expected_memory
+        assert construction_thread, "Mem0 construction never ran"
+        assert construction_thread[0] is not threading.main_thread()
+        assert construction_thread[0] is not threading.current_thread()
 
     @pytest.mark.asyncio
     async def test_create_memory_instance_replaces_mem0_openai_embedder_with_strict_adapter(

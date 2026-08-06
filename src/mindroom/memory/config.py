@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
@@ -253,6 +254,19 @@ async def create_memory_instance(
         Configured AsyncMemory instance
 
     """
+    # Mem0 construction is blocking: it walks the filesystem (Chroma path
+    # mkdir), may install sentence-transformers deps, builds the ChromaDB
+    # vector store, and wires the embedder. Run it in a worker thread so the
+    # event loop never stalls during prompt/agent preparation (#1260).
+    return await asyncio.to_thread(_build_memory_instance, storage_path, config, runtime_paths)
+
+
+def _build_memory_instance(
+    storage_path: Path,
+    config: Config,
+    runtime_paths: RuntimePaths,
+) -> AsyncMemory:
+    """Synchronously construct a Mem0 memory instance (runs off the event loop)."""
     from mem0 import AsyncMemory  # noqa: PLC0415
 
     config_dict = _get_memory_config(storage_path, config, runtime_paths)
