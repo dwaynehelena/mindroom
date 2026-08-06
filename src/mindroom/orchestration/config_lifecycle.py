@@ -249,6 +249,11 @@ class ConfigReloadLifecycle:
         call it from an orchestrator-owned background task so an admitted tool
         call cannot wait on its own slot. The drain defers for at most 600
         seconds before closing admission over a forced apply.
+
+        Admission is closed as soon as the drain starts, not only when the
+        apply begins, so no new response can slip in during the drain and be
+        torn down by the apply. The in-flight count is frozen at drain start
+        and the apply runs only once it reaches zero (or the force bound).
         """
         loop = asyncio.get_running_loop()
         drain_state = _ReplacementDrainState()
@@ -261,14 +266,31 @@ class ConfigReloadLifecycle:
                             operation=operation_name,
                         )
                     break
-                if await self._should_defer_replacement_for_active_responses(
-                    drain_state=drain_state,
-                    active_response_count=self.response_admission_gate.in_flight_response_count,
-                    loop=loop,
-                    operation_name=operation_name,
-                ):
-                    continue
+                # Not idle: close admission now so no new response can slip in
+                # during the drain and be torn down by the apply. The in-flight
+                # count is frozen; wait for it to drain (or force-apply after
+                # the bounded timeout).
                 self.response_admission_gate.close()
+                while request_is_current():
+                    if self.response_admission_gate.in_flight_response_count == 0:
+                        logger.info(
+                            "Active responses finished; applying replacement",
+                            operation=operation_name,
+                        )
+                        break
+                    if not await self._should_defer_replacement_for_active_responses(
+                        drain_state=drain_state,
+                        active_response_count=self.response_admission_gate.in_flight_response_count,
+                        loop=loop,
+                        operation_name=operation_name,
+                    ):
+                        break
+                # A newer request superseded during the drain: reopen admission
+                # and let the reload loop pick up the newer request instead of
+                # applying a stale plan over a live response.
+                if not request_is_current():
+                    self.response_admission_gate.reopen()
+                    return
                 break
             else:
                 return

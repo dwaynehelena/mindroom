@@ -556,6 +556,48 @@ async def test_drain_applies_reload_after_force_timeout(
 
 
 @pytest.mark.asyncio
+async def test_drain_closes_admission_so_no_new_response_slips_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A reload must close admission at drain start so no response can slip in mid-drain.
+
+    Regression for the race where a config reload could be applied (or
+    force-applied) while a response was still mid-flight, or a new response
+    could slip in between gate-close and apply. Closing admission as soon as
+    the drain starts freezes the in-flight count, so a reload never tears down
+    a bot/agent that an active response still references.
+    """
+    monkeypatch.setattr("mindroom.orchestration.config_lifecycle._CONFIG_RELOAD_DEBOUNCE_SECONDS", 0)
+    monkeypatch.setattr("mindroom.orchestration.config_lifecycle._REPLACEMENT_DRAIN_IDLE_POLL_SECONDS", 0.01)
+    gate = ResponseAdmissionGate()
+    # One response is already in flight when the reload is queued.
+    assert gate.admit()
+    lifecycle = _make_lifecycle(tmp_path, response_admission_gate=gate)
+    lifecycle._update_config = AsyncMock(return_value=True)
+
+    lifecycle.request_reload()
+    task = lifecycle._reload_task
+    assert task is not None
+
+    # Let the drain start and close admission.
+    await asyncio.sleep(0.05)
+    assert gate.closed, "admission must close as soon as the drain starts"
+    # A new response arriving mid-drain must be refused, not admitted into a
+    # window that is about to tear down the entity it references.
+    assert gate.admit() is False
+
+    # The apply must not run while the in-flight response is still active.
+    lifecycle._update_config.assert_not_awaited()
+
+    # Once the in-flight response finishes, the drain applies and reopens.
+    gate.release()
+    await asyncio.wait_for(task, timeout=1)
+    lifecycle._update_config.assert_awaited_once()
+    assert gate.closed is False
+
+
+@pytest.mark.asyncio
 async def test_update_config_delegates_initial_load(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
