@@ -538,6 +538,35 @@ def test_turn_recorder_keeps_seed_metadata_when_runtime_metadata_is_missing() ->
     }
 
 
+def test_turn_recorder_claim_does_not_mark_persisted_until_write_lands() -> None:
+    """A claim must not drop the proof if the write never lands (crash/failure)."""
+    recorder = TurnRecorder(user_message="Please continue")
+    recorder.mark_interrupted()
+
+    # First claim is granted but must NOT set the durable flag.
+    assert recorder.claim_interrupted_persistence() is True
+    assert recorder.interrupted_persisted is False
+    # A second claim is still granted because the proof was never persisted.
+    assert recorder.claim_interrupted_persistence() is True
+
+    # Only an explicit durable mark closes the claim.
+    recorder.mark_interrupted_persisted()
+    assert recorder.interrupted_persisted is True
+    assert recorder.claim_interrupted_persistence() is False
+
+
+def test_turn_recorder_claim_denied_after_durable_mark() -> None:
+    """A completed or already-persisted recorder must not re-claim persistence."""
+    recorder = TurnRecorder(user_message="Please continue")
+    recorder.mark_interrupted()
+    recorder.mark_interrupted_persisted()
+    assert recorder.claim_interrupted_persistence() is False
+
+    completed = TurnRecorder(user_message="Please continue")
+    completed.mark_completed()
+    assert completed.claim_interrupted_persistence() is False
+
+
 def test_persist_interrupted_replay_snapshot_keeps_minimal_interrupted_turn(tmp_path: Path) -> None:
     """Even hard-cancelled turns with no observed assistant state should persist one interrupted record."""
     storage = create_state_storage(

@@ -687,6 +687,10 @@ class ResponseRunner:
             )
         finally:
             storage.close()
+        # Only after the write landed durably is the proof considered persisted.
+        # A failed or mid-write crash leaves the recorder eligible to re-persist
+        # on a later recovery pass instead of silently dropping the proof.
+        recorder.mark_interrupted_persisted()
 
     def _ensure_recorder_interrupted(self, recorder: TurnRecorder) -> None:
         """Mark one recorder interrupted unless lower layers already captured richer state."""

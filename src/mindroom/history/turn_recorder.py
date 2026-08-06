@@ -125,8 +125,17 @@ class TurnRecorder:
         )
 
     def claim_interrupted_persistence(self) -> bool:
-        """Return whether one interrupted turn should be persisted now."""
+        """Return whether one interrupted turn should be persisted now.
+
+        The claim does not mark the proof persisted: the durable flag is only
+        set by :meth:`mark_interrupted_persisted` after the write actually
+        lands, so a failed or crashed write leaves the recorder eligible for a
+        retry instead of silently dropping the interrupted-replay proof.
+        """
         if self.outcome != "interrupted" or self.interrupted_persisted:
             return False
-        self.interrupted_persisted = True
         return True
+
+    def mark_interrupted_persisted(self) -> None:
+        """Mark one interrupted turn's proof as durably persisted."""
+        self.interrupted_persisted = True
