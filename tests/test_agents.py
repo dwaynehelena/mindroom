@@ -3950,6 +3950,72 @@ def test_config_rejects_duplicate_team_members() -> None:
         )
 
 
+def test_config_rejects_self_referential_team() -> None:
+    """A team that names itself as a member must be rejected at load time."""
+    with pytest.raises(ValidationError, match="Circular team reference detected: t1 -> t1"):
+        Config(
+            agents={"a": AgentConfig(display_name="A")},
+            teams={
+                "t1": TeamConfig(
+                    display_name="Self Team",
+                    role="Self-referential",
+                    agents=["t1"],
+                ),
+            },
+        )
+
+
+def test_config_rejects_mutually_referential_teams() -> None:
+    """Two teams that name each other as members must be rejected at load time."""
+    with pytest.raises(ValidationError, match="Circular team reference detected: t1 -> t2 -> t1"):
+        Config(
+            agents={"a": AgentConfig(display_name="A")},
+            teams={
+                "t1": TeamConfig(
+                    display_name="Team One",
+                    role="Mutual",
+                    agents=["t2"],
+                ),
+                "t2": TeamConfig(
+                    display_name="Team Two",
+                    role="Mutual",
+                    agents=["t1"],
+                ),
+            },
+        )
+
+
+def test_config_rejects_longer_circular_team_reference() -> None:
+    """A three-team reference cycle must be rejected at load time."""
+    with pytest.raises(ValidationError, match="Circular team reference detected: t1 -> t2 -> t3 -> t1"):
+        Config(
+            agents={"a": AgentConfig(display_name="A")},
+            teams={
+                "t1": TeamConfig(display_name="Team One", role="Cycle", agents=["t2"]),
+                "t2": TeamConfig(display_name="Team Two", role="Cycle", agents=["t3"]),
+                "t3": TeamConfig(display_name="Team Three", role="Cycle", agents=["t1"]),
+            },
+        )
+
+
+def test_config_accepts_acyclic_team_membership() -> None:
+    """A team whose members are all real agents must load without a cycle error."""
+    config = Config(
+        agents={
+            "a": AgentConfig(display_name="A"),
+            "b": AgentConfig(display_name="B"),
+        },
+        teams={
+            "t1": TeamConfig(
+                display_name="Team One",
+                role="Acyclic",
+                agents=["a", "b"],
+            ),
+        },
+    )
+    assert config.teams["t1"].agents == ["a", "b"]
+
+
 def test_config_rejects_teams_with_members_that_delegate_to_private_agents() -> None:
     """Configured teams must reject shared members that reach private agents via delegation."""
     with pytest.raises(

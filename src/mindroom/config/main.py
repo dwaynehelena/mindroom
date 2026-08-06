@@ -657,9 +657,52 @@ class Config(BaseModel):
     @model_validator(mode="after")
     def validate_team_agents(self) -> Config:
         """Ensure team members exist and do not use private requester-local state."""
+        self._reject_circular_team_references()
         for team_name, team_config in self.teams.items():
             self.assert_team_agents_supported(team_config.agents, team_name=team_name)
         return self
+
+    def _reject_circular_team_references(self) -> None:
+        """Reject self-referential or mutually-referential team membership at load time.
+
+        A team's ``agents`` list must name only real agents. When a member name is
+        itself a configured team, the membership graph can form a cycle (a team
+        containing itself, or two teams containing each other). Such a cycle is
+        ambiguous and cannot be materialized, so it is rejected explicitly here
+        instead of surfacing as a generic "unknown agent" error downstream.
+        """
+        team_names = set(self.teams)
+        if not team_names:
+            return
+
+        # Build the team-reference graph: team -> teams it names as members.
+        references: dict[str, set[str]] = {
+            team_name: {member for member in team_config.agents if member in team_names}
+            for team_name, team_config in self.teams.items()
+        }
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+        stack: list[str] = []
+
+        def _visit(team_name: str) -> None:
+            if team_name in visited:
+                return
+            if team_name in visiting:
+                cycle_start = team_name
+                cycle = stack[stack.index(cycle_start) :] + [cycle_start]
+                msg = f"Circular team reference detected: {' -> '.join(cycle)}"
+                raise ValueError(msg)
+            visiting.add(team_name)
+            stack.append(team_name)
+            for referenced in sorted(references[team_name]):
+                _visit(referenced)
+            stack.pop()
+            visiting.discard(team_name)
+            visited.add(team_name)
+
+        for team_name in sorted(team_names):
+            _visit(team_name)
 
     def _invalid_compaction_model_references(self) -> list[str]:
         """Return any compaction model references that point at unknown models."""
