@@ -43,6 +43,7 @@ from mindroom.config.matrix import (
     MatrixSyncConfig,
     MindRoomUserConfig,
 )
+from mindroom.config.privacy import PrivacyRoutingConfig  # noqa: TC001
 from mindroom.config.memory import MemoryBackend, MemoryConfig, MemorySearchConfig
 from mindroom.config.models import (
     CompactionConfig,
@@ -453,6 +454,10 @@ class Config(BaseModel):
     bot_accounts: list[str] = Field(
         default_factory=list,
         description="Matrix user IDs of non-MindRoom bots (e.g., bridge bots) that should be treated like agents for response logic — their messages won't trigger the multi-human-thread mention requirement",
+    )
+    privacy_routing: PrivacyRoutingConfig = Field(
+        default_factory=PrivacyRoutingConfig,
+        description="Governed privacy routing configuration for model and tool executors",
     )
 
     @classmethod
