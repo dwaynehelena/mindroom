@@ -445,10 +445,8 @@ models:
   # --- Local (llama.local) ---
   # llama-swap + llama.cpp, see https://github.com/basnijholt/dotfiles/blob/main/configs/nixos/hosts/pc/ai.nix
   default:
-    extra_kwargs:
-      base_url: http://llama.local/v1
-    id: gpt-oss-low:20b
-    provider: openai
+    id: deepseek/deepseek-v4-flash
+    provider: openrouter
   devstral:
     extra_kwargs:
       base_url: http://llama.local/v1
@@ -492,6 +490,9 @@ models:
   deepseek:
     id: deepseek/deepseek-v4-pro
     provider: openrouter
+  deepseek_flash:
+    id: deepseek/deepseek-v4-flash
+    provider: openrouter
   nemotron:
     id: nvidia/nemotron-3-super-120b-a12b:free
     provider: openrouter
@@ -502,7 +503,7 @@ plugins: []
 room_models:
   research: haiku
 router:
-  model: ollama
+  model: deepseek_flash
 teams:
   code_team:
     agents:

@@ -425,6 +425,10 @@ models:
     provider: openrouter
     id: deepseek/deepseek-v4-pro
     context_window: 1048576
+  deepseek_flash:
+    provider: openrouter
+    id: deepseek/deepseek-v4-flash
+    context_window: 1048576
   glm:
     provider: openrouter
     id: z-ai/glm-5.2
