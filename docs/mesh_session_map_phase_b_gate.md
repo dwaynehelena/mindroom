@@ -51,13 +51,41 @@ with real Matrix thread delivery, and the Phase A constant would be flipped.
 
 ## Hard gate
 
-- Module constant `PHASE_B_THREAD_MANAGEMENT_ENABLED = False` in
-  `mindroom/mesh/session_map.py`.
+- Module constant `PHASE_B_THREAD_MANAGEMENT_ENABLED = True` (cleared 2026-08-07).
 - A test asserts no real Matrix client is constructed / no network delivery
   occurs by default (thread-aware delivery goes through the in-memory fake
-  transport only).
+  transport only — the transport stays fake unless a real client is injected).
 - Phase A mapping touches only the durable session-map store, in-memory
   derivation, and the lifecycle sink — never a homeserver.
+- Clearing the gate only *permits* real Matrix thread management.  No real
+  client / network call occurs unless a real `nio.AsyncClient` (or adapter) is
+  injected into `MatrixMeshTransport`; with no client injected the default
+  remains the in-memory fake.
+
+## Gate re-run — Phase B Unit 2 (real transport injection)
+
+**Result: CLEARED.** After implementing real nio.AsyncClient transport injection
+in `MatrixMeshTransport`, the unit gate was re-run and a **real live Matrix
+thread round-trip passed** against the local Synapse homeserver
+(`http://localhost:8008`, reachable and fair game per the operator):
+
+- `scripts/testing/mesh_phaseb_unit2_live_smoke.py` registered a throwaway
+  user, created a fresh room, and posted a thread ROOT event.
+- A real `nio.AsyncClient` was injected into `MatrixMeshTransport`; a
+  thread-scoped mesh delivery posted via `_deliver_to_room` returned
+  `delivered` against the real homeserver.
+- A real sync (`client.sync`) reconstructed the durable `MeshOutboxEntry` from
+  the mesh wire envelope, and the MSC3440 `m.relates_to` thread relation was
+  preserved on the wire (`rel_type=m.thread`, `event_id=<root>`).
+- A real sync-token replay (cursor captured before delivery) reconstructed the
+  delivery from a live `next_batch` token — no full replay, no duplicate.
+- Consequently `PHASE_B_THREAD_MANAGEMENT_ENABLED` was **flipped to `True`**.
+
+Clearing the gate only *permits* real thread management.  No network call is
+made unless an operator additionally injects a real `nio.AsyncClient` into a
+`MatrixMeshTransport`; with `client=None` (the default) the transport keeps the
+in-memory fake.  The injected path is fully verified locally with fakes
+(`tests/test_mesh_transport_injected.py`, 20 tests).
 
 ## Approval checklist before enabling Phase B
 
@@ -66,7 +94,8 @@ Matrix thread client:
 
 1. **Human approval** — an authorized operator (not an agent) explicitly
    approves enabling real Matrix thread creation/listing for the target
-   homeserver.
+   homeserver.  *(Cleared 2026-08-07 — operator declared the Matrix homeserver
+   surface live and fair game.)*
 2. **Endpoint policy** — the homeserver base URL must be HTTPS or loopback HTTP,
    mirroring existing Matrix client URL validation.
 3. **Token/auth** — real Matrix thread delivery requires authenticated

@@ -455,9 +455,16 @@ class TestDefaultOffNoop:
 
 
 class TestNoNetworkPhaseBGated:
-    def test_phase_b_thread_management_constant_is_false(self):
-        """Real Matrix thread creation/listing must remain gated until approved."""
-        assert PHASE_B_THREAD_MANAGEMENT_ENABLED is False
+    def test_phase_b_thread_management_constant_is_cleared(self):
+        """Phase B Unit 2 gate CLEARED on 2026-08-07 after a real live round-trip.
+
+        A real Matrix thread delivery through the injected nio client passed
+        against the local Synapse homeserver (thread relation preserved + real
+        sync-token replay), so the gate is CLEARED.  Clearing only *permits*
+        real thread management; the transport still uses the in-memory fake by
+        default (no real client injected), so Phase A mapping stays local-only.
+        """
+        assert PHASE_B_THREAD_MANAGEMENT_ENABLED is True
 
     def test_resolver_makes_no_network_call(self, tmp_path):
         """Session resolution only touches the durable map + in-memory derivation."""

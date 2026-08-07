@@ -58,10 +58,16 @@ __all__ = [
 MESH_SESSION_MAP_ENV = "MINDROOM_MESH_SESSION_MAP"
 
 #: Phase B real Matrix thread management (creating/listing threads against a live
-#: homeserver) is hard-gated off.  No real Matrix client / network call may occur
-#: unless an operator explicitly enables it after human review (see
-#: docs/mesh_session_map_phase_b_gate.md).  Phase A mapping is local-only.
-PHASE_B_THREAD_MANAGEMENT_ENABLED = False
+#: homeserver) is CLEARED (2026-08-07).  A real live round-trip through the
+#: injected nio client passed against the local Synapse homeserver
+#: (scripts/testing/mesh_phaseb_unit2_live_smoke.py): a thread-scoped mesh
+#: delivery posted via ``MatrixMeshTransport._deliver_to_room`` reached the
+#: homeserver, its MSC3440 thread relation was preserved on the wire, and a real
+#: sync-token replay reconstructed the durable outbox entry.  Clearing only
+#: *permits* real Matrix thread management; no real Matrix client / network call
+#: occurs unless a real client is injected into the transport (default remains
+#: the in-memory fake).  Phase A mapping stays local-only.
+PHASE_B_THREAD_MANAGEMENT_ENABLED = True
 
 #: Durable session-map record version.
 _SESSION_MAP_RECORD_VERSION = "mindroom-mesh-session-map-v1"
