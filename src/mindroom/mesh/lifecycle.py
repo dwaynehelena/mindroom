@@ -36,6 +36,9 @@ MeshLifecycleEventType = Literal[
     "message_cancelled",
     "message_dropped_loop",
     "message_dropped_duplicate",
+    "worker_cancel_requested",
+    "worker_cancel_acked",
+    "worker_cancel_failed",
     "gateway_started",
     "gateway_stopped",
 ]

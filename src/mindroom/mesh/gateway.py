@@ -172,6 +172,12 @@ class MeshGateway:
     # ``enabled`` (default-OFF) routing is unchanged (room-mode only) and the
     # gateway keeps its exact behavior.
     session_mapping: object | None = None
+    # Phase A cancellation-propagation coordinator.  When ``None`` or not
+    # ``enabled`` (default-OFF) ``cancel_outbox_entry`` behaves exactly as today
+    # (pre-delivery outbox cancellation only); when present and enabled it also
+    # issues a worker-facing cancel command and awaits the acknowledgment
+    # (additive side effect).
+    cancel_prop: object | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _workers: dict[str, MeshWorkerRegistration] = field(default_factory=dict, repr=False)
     _outbox: dict[str, MeshOutboxEntry] = field(default_factory=dict, repr=False)
@@ -192,6 +198,11 @@ class MeshGateway:
         # with the coordinator too so binding events are observable.
         if self.session_mapping is not None and hasattr(self.session_mapping, "lifecycle_sink"):
             self.session_mapping.lifecycle_sink = self._lifecycle_sink
+        # Share the gateway's lifecycle sink with the cancellation-propagation
+        # coordinator so worker_cancel_requested / worker_cancel_acked /
+        # worker_cancel_failed events accumulate in the same lifecycle stream.
+        if self.cancel_prop is not None and hasattr(self.cancel_prop, "lifecycle_sink"):
+            self.cancel_prop.lifecycle_sink = self._lifecycle_sink
 
     def _session_resolver(self) -> MeshSessionResolver:
         """Return the active thread/session resolver (default-OFF aware).
@@ -212,6 +223,12 @@ class MeshGateway:
     def _session_mapping_active(self) -> bool:
         """Return whether thread/session mapping is enabled (default-OFF)."""
         coordinator = self.session_mapping
+        return coordinator is not None and bool(getattr(coordinator, "enabled", False))
+
+    @property
+    def _cancel_prop_active(self) -> bool:
+        """Return whether cancellation propagation is enabled (default-OFF)."""
+        coordinator = self.cancel_prop
         return coordinator is not None and bool(getattr(coordinator, "enabled", False))
 
     @property
@@ -491,7 +508,17 @@ class MeshGateway:
         *,
         cancel_source: str = "user_stop",
     ) -> None:
-        """Cancel one pending outbox entry (follows cancellation module pattern)."""
+        """Cancel one pending outbox entry (follows cancellation module pattern).
+
+        Fully additive: when cancellation propagation is enabled (default-OFF,
+        ``MINDROOM_MESH_CANCEL_PROP`` / a present + enabled ``cancel_prop``
+        coordinator) this additionally issues a worker-facing cancel command to
+        the target worker and awaits its acknowledgment, emitting content-free
+        ``worker_cancel_requested`` / ``worker_cancel_acked`` lifecycle events.
+        When propagation is default-OFF, this behaves exactly as today.
+        """
+        message_id: str | None = None
+        correlation_id: str | None = None
         with self._lock:
             entry = self._outbox.get(outbox_id)
             if entry is None:
@@ -502,6 +529,11 @@ class MeshGateway:
                 raise MeshGatewayError(msg)
             entry.status = "cancelled"
             entry.cancel_source = cancel_source
+            message_id = entry.message_id
+            # Correlate the cancel to the originating message's correlation_id
+            # (the durable message row carries the user-facing correlation).
+            message = self._messages.get(message_id)
+            correlation_id = message.correlation_id if message is not None else None
         self._lifecycle_sink.append(
             MeshLifecycleEvent(
                 event_type="message_cancelled",
@@ -511,6 +543,13 @@ class MeshGateway:
                 cancel_source=cancel_source,
             ),
         )
+        # Additive Phase A side effect (default-OFF): propagate the cancel to
+        # the target worker and await its acknowledgment.  When propagation is
+        # OFF this delegates to a benign no-op and behavior is unchanged.
+        if self._cancel_prop_active:
+            propagate = getattr(self.cancel_prop, "propagate", None)
+            if propagate is not None:
+                await propagate(entry, correlation_id)
 
     def get_outbox_entry(self, outbox_id: str) -> MeshOutboxEntry | None:
         """Return one outbox entry by ID (for inspection/reconnect)."""

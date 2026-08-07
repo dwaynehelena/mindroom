@@ -18,6 +18,20 @@ Built on existing MindRoom primitives:
 
 from __future__ import annotations
 
+from mindroom.mesh.cancel_prop import (
+    MESH_CANCEL_PROP_ENV,
+    PHASE_B_CANCEL_RPC_ENABLED,
+    FakeMeshCancelTransport,
+    MeshCancelAck,
+    MeshCancelCommand,
+    MeshCancelPropagationError,
+    MeshCancelPropagationResult,
+    MeshCancelRegistry,
+    MeshCancelTransport,
+    MeshCancellationPropagator,
+    OpenClawMeshCancelTransport,
+    cancel_prop_flag_enabled,
+)
 from mindroom.mesh.cursor import MeshCursorStore, MeshReconnectCursor
 from mindroom.mesh.enrollment import (
     PHASE_B_HANDSHAKE_ENABLED,
@@ -74,15 +88,25 @@ from mindroom.mesh.transport import (
 )
 
 __all__ = [
+    "MESH_CANCEL_PROP_ENV",
     "MESH_RESUME_ENV",
     "MESH_SESSION_MAP_ENV",
+    "PHASE_B_CANCEL_RPC_ENABLED",
     "PHASE_B_HANDSHAKE_ENABLED",
     "PHASE_B_RESUME_ENABLED",
     "PHASE_B_THREAD_MANAGEMENT_ENABLED",
+    "FakeMeshCancelTransport",
     "GatewayExecutionGate",
     "GatewayOnlyRuntime",
     "GatewayRuntimeMode",
     "MatrixMeshTransport",
+    "MeshCancelAck",
+    "MeshCancelCommand",
+    "MeshCancelPropagationError",
+    "MeshCancelPropagationResult",
+    "MeshCancelRegistry",
+    "MeshCancelTransport",
+    "MeshCancellationPropagator",
     "MeshCursorStore",
     "MeshEnrollmentAuthority",
     "MeshEnrollmentCoordinator",
@@ -112,7 +136,9 @@ __all__ = [
     "MeshWorkerIdentity",
     "MeshWorkerRegistration",
     "MeshWorkerStatus",
+    "OpenClawMeshCancelTransport",
     "SessionBinding",
+    "cancel_prop_flag_enabled",
     "content_free_lifecycle_outcomes",
     "enrollment_flag_enabled",
     "resume_flag_enabled",
