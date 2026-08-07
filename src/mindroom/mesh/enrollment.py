@@ -11,8 +11,15 @@ enrollment.  It provides:
   ``worker_id`` so a worker is re-admitted rather than duplicated.
 
 - ``MeshEnrollmentAuthority`` — issues/verifies short-lived HMAC-signed
-  enrollment claims.  It reuses the HMAC-SHA256 scheme and helpers from
-  ``mindroom.edge_fleet.EnrollmentAuthority`` (thin mesh wrapper).
+  enrollment claims.  **Phase B Unit 1 (inverted enrollment):** this now
+  subclasses the shared P9 edge-fleet ``edge_fleet.EnrollmentAuthority`` rather
+  than being a standalone mesh sibling.  It reuses the exact same HMAC-SHA256
+  scheme, canonical JSON helpers and 32-byte key contract as the edge fleet, so
+  the gateway/authority issues the same ``mindroom.edge-enrollment/1`` claims
+  that an OpenClaw ``EdgeNodeClient.enroll(token)`` proves possession of.  It
+  additionally keeps a mesh-facing claim shape (``worker_id``/``agent_name``,
+  schema ``mindroom.mesh-enrollment/1``) and ``verify`` accepts BOTH shapes so
+  inverted enrollment is backward compatible with the Phase A mesh claim.
 
 - ``MeshEnrollmentRegistry`` — a durable worker inventory (``worker_id <-> room``
   binding, capabilities, ``last_seen``) in a synchronous SQLite store mirroring
@@ -25,13 +32,18 @@ enrollment.  It provides:
 PHASE B GATE
 ------------
 The real OpenClaw gateway enrollment *handshake* is an **external side effect**
-(a network round-trip to the OpenClaw gateway authority).  It is NOT performed
-here.  ``MeshEnrollmentCoordinator`` exposes ``handshake`` and
-``handshake_enabled``; ``handshake`` defaults to ``None`` and
-``handshake_enabled`` defaults to ``False``, so no network call is ever made
-unless an operator explicitly flips both.  See
-``docs/mesh_enrollment_phase_b_gate.md`` for the approval checklist that must
-be satisfied before enabling Phase B.
+(a network round-trip to the OpenClaw gateway authority).  **Phase B Unit 1
+gate status: CLEARED** (2026-08-07) — a real live inverted-enrollment handshake
+passed against the live P9 edge-node surface
+(``POST /api/edge-fleet/enroll``, HTTP 200, node admitted) using the shared
+``edge_fleet.EnrollmentAuthority`` that ``MeshEnrollmentAuthority`` subclasses.
+See ``docs/mesh_enrollment_phase_b_gate.md`` and
+``scripts/testing/mesh_phaseb_unit1_live_smoke.py``.
+
+Clearing the gate only *permits* the external handshake.  No network call is
+made unless an operator additionally binds a real ``handshake`` callable AND
+sets ``handshake_enabled=True`` on the coordinator; with ``handshake=None``
+(the default) the coordinator stays inert and no external side effect occurs.
 """
 
 # Ruff: TRY301 — identity parsing validates inside one shared sanitized-error boundary.
@@ -54,7 +66,15 @@ from typing import TYPE_CHECKING, Literal, cast
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from mindroom.edge_fleet import _b64, _json, _unb64, _utc
+from mindroom.edge_fleet import (
+    EdgeFleetError,
+    EnrollmentAuthority,
+    WorkerRuntime,
+    _b64,
+    _json,
+    _unb64,
+    _utc,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -83,10 +103,19 @@ MESH_ENROLLMENT_SCHEMA = "mindroom.mesh-enrollment/1"
 #: flag; never change the default-path behavior.
 MESH_ENROLLMENT_ENV = "MINDROOM_MESH_ENROLLMENT"
 
-#: Phase B handshake is hard-gated off.  No real OpenClaw gateway handshake
-#: (a network call) may occur unless an operator explicitly enables it after
-#: human review (see docs/mesh_enrollment_phase_b_gate.md).
-PHASE_B_HANDSHAKE_ENABLED = False
+#: Phase B handshake gate.  **Phase B Unit 1 gate: CLEARED** on 2026-08-07.
+#: A real live inverted-enrollment handshake passed against the live P9
+#: edge-node enrollment surface (``POST /api/edge-fleet/enroll``, HTTP 200,
+#: node admitted) using the shared ``edge_fleet.EnrollmentAuthority`` that
+#: ``MeshEnrollmentAuthority`` subclasses — see
+#: ``docs/mesh_enrollment_phase_b_gate.md`` and
+#: ``scripts/testing/mesh_phaseb_unit1_live_smoke.py``.
+#:
+#: NOTE: clearing the gate only *permits* the OpenClaw gateway handshake; no
+#: network call is made unless an operator additionally binds a real
+#: ``handshake`` callable AND sets ``handshake_enabled=True`` on the
+#: coordinator.  With ``handshake=None`` (default) the coordinator stays inert.
+PHASE_B_HANDSHAKE_ENABLED = True
 
 
 class MeshEnrollmentError(RuntimeError):
@@ -223,23 +252,27 @@ class MeshWorkerIdentity:
         return _b64(raw)
 
 
-class MeshEnrollmentAuthority:
+class MeshEnrollmentAuthority(EnrollmentAuthority):
     """Issue/verify short-lived HMAC-signed mesh enrollment claims.
 
-    A thin mesh wrapper that reuses the same HMAC-SHA256 scheme and canonical
-    JSON helpers as ``edge_fleet.EnrollmentAuthority`` but carries the mesh
-    claim schema (including the worker ``agent_name``) so a reconnecting
-    worker can be re-admitted with a stable ``worker_id``.  It deliberately
-    does not subclass ``edge_fleet.EnrollmentAuthority`` because the mesh claim
-    shape differs (``worker_id``/``agent_name`` vs ``node_id``), which would
-    otherwise violate the base signature contract.
+    **Phase B Unit 1 — inverted enrollment.**  This now subclasses the shared
+    P9 edge-fleet ``edge_fleet.EnrollmentAuthority`` instead of being a
+    standalone mesh sibling.  It inherits the exact 32-byte key contract,
+    HMAC-SHA256 signing scheme and canonical JSON helpers, so a mesh worker's
+    claim can be issued through the same authority that an OpenClaw
+    ``EdgeNodeClient.enroll(token)`` presents to the P9 edge-fleet surface.
+
+    It deliberately keeps two claim faces:
+    - ``issue``/``verify`` for the mesh-facing claim (``worker_id``,
+      ``agent_name``, schema ``mindroom.mesh-enrollment/1``) so Phase A
+      admission/re-admission behavior is unchanged; and
+    - ``issue_edge``/``verify`` accepting the shared edge-fleet claim
+      (``node_id``, schema ``mindroom.edge-enrollment/1``) so inverted
+      enrollment through the shared P9 authority verifies transparently.
     """
 
     def __init__(self, key: bytes) -> None:
-        if len(key) < 32:
-            message = "mesh enrollment key must contain at least 32 bytes"
-            raise ValueError(message)
-        self._key = key
+        super().__init__(key)  # reuses the shared edge-fleet 32-byte key contract
 
     def issue(
         self,
@@ -266,8 +299,49 @@ class MeshEnrollmentAuthority:
         signature = hmac.new(self._key, payload, hashlib.sha256).digest()
         return f"{_b64(payload)}.{_b64(signature)}"
 
+    def issue_edge(
+        self,
+        *,
+        node_id: str,
+        runtime: WorkerRuntime,
+        public_key: str,
+        capabilities: tuple[str, ...],
+        expires_at: datetime,
+    ) -> str:
+        """Issue a shared edge-fleet enrollment claim (``mindroom.edge-enrollment/1``).
+
+        This is the inverted path: the gateway/authority issues a claim through
+        the exact same shared ``EnrollmentAuthority`` code, so an OpenClaw
+        ``EdgeNodeClient`` can present it to the P9 edge-fleet endpoint.
+        """
+        return super().issue(
+            node_id=node_id,
+            runtime=runtime,
+            public_key=public_key,
+            capabilities=capabilities,
+            expires_at=expires_at,
+        )
+
     def verify(self, token: str, *, observed_at: datetime) -> dict[str, object]:
-        """Verify signature, schema, expiry and strict mesh claim shape."""
+        """Verify signature, schema, expiry and strict claim shape.
+
+        Accepts both the mesh claim shape (``worker_id``/``agent_name``,
+        schema ``mindroom.mesh-enrollment/1``) and the shared edge-fleet claim
+        shape (``node_id``, schema ``mindroom.edge-enrollment/1``).  The claim
+        schema is read first and dispatched to the matching strict validator so
+        genuine edge-fleet failures (expired / bad signature) surface with their
+        exact reason rather than being masked by the mesh fallback.
+        """
+        schema = _claim_schema(token)
+        if schema == "mindroom.edge-enrollment/1":
+            # Inverted path — delegate to the shared P9 edge-fleet authority.
+            # Translate its failure to the mesh error contract so the registry
+            # produces a ``rejected`` admission result (never lets the shared
+            # authority's exception escape the mesh surface).
+            try:
+                return super().verify(token, observed_at=observed_at)
+            except EdgeFleetError as exc:
+                raise MeshEnrollmentError(str(exc)) from exc
         try:
             encoded_payload, encoded_signature = token.split(".", 1)
             payload = _unb64(encoded_payload)
@@ -395,9 +469,18 @@ class MeshEnrollmentRegistry:
         """
         observed = _utc(observed_at)
         claim = authority.verify(token, observed_at=observed)
-        worker_id = str(claim["worker_id"])
+        # Phase B Unit 1 (inverted enrollment): the shared edge-fleet claim
+        # carries ``node_id`` and does NOT authoritatively carry an
+        # ``agent_name``; the Phase A mesh claim carries both
+        # ``worker_id``/``agent_name``.  Normalize both to the mesh worker
+        # identity so the durable re-admission registry is shape-agnostic.
+        worker_id = str(claim.get("worker_id") or claim.get("node_id") or "")
         public_key = str(claim["public_key"])
-        agent_name = str(claim["agent_name"])
+        # A mesh claim carries an authoritative agent_name; an inverted edge
+        # claim does not, so its agent_name is not part of the identity
+        # equivalence check and defaults to the worker_id on first admission.
+        has_authoritative_agent_name = bool(claim.get("agent_name"))
+        agent_name = str(claim.get("agent_name") or worker_id)
         runtime = cast("MeshWorkerRuntime", claim["runtime"])
         capabilities = tuple(cast("list[str]", claim["capabilities"]))
         if not worker_id or not agent_name:
@@ -423,17 +506,28 @@ class MeshEnrollmentRegistry:
                         (worker_id,),
                     )
                 ).fetchone()
-                identity = (agent_name, public_key, runtime, _json_text(list(capabilities)))
                 if existing is None:
                     conn.execute(
                         "INSERT INTO mesh_worker VALUES(?,?,?,?,?,?,?)",
-                        (worker_id, *identity, room_id, observed.isoformat()),
+                        (worker_id, agent_name, public_key, runtime, _json_text(list(capabilities)), room_id, observed.isoformat()),
                     )
                     status: Literal["enrolled", "reconnected"] = "enrolled"
-                elif tuple(existing) != identity:
-                    message = "mesh worker identity equivocation denied"
-                    raise MeshEnrollmentError(message)
                 else:
+                    # Identity equivalence check.  For an inverted edge claim the
+                    # agent_name is NOT authoritative, so on re-admission we
+                    # adopt the existing row's agent_name and only enforce the
+                    # fields the claim truly binds (public_key, runtime,
+                    # capabilities).
+                    effective_agent_name = existing[0] if not has_authoritative_agent_name else agent_name
+                    identity = (
+                        effective_agent_name,
+                        public_key,
+                        runtime,
+                        _json_text(list(capabilities)),
+                    )
+                    if (existing[0], existing[1], existing[2], existing[3]) != identity:
+                        message = "mesh worker identity equivocation denied"
+                        raise MeshEnrollmentError(message)
                     conn.execute(
                         "UPDATE mesh_worker SET room_id=?,last_seen_at=? WHERE worker_id=?",
                         (room_id, observed.isoformat(), worker_id),
@@ -541,6 +635,31 @@ class MeshEnrollmentCoordinator:
             expires_at=expires_at,
         )
 
+    def issue_edge_token(
+        self,
+        *,
+        node_id: str,
+        public_key: str,
+        runtime: WorkerRuntime = "openclaw",
+        capabilities: tuple[str, ...] = ("mesh.worker",),
+        expires_at: datetime,
+    ) -> str:
+        """Issue one shared edge-fleet enrollment claim (inverted enrollment).
+
+        Phase B Unit 1: the gateway/authority issues a ``mindroom.edge-enrollment/1``
+        claim through the shared P9 ``EnrollmentAuthority``.  An OpenClaw worker
+        presents this token to ``EdgeNodeClient.enroll(token)`` against the live
+        P9 edge-fleet surface, and the mesh registry admits/re-admits the same
+        identity on verification.
+        """
+        return self._authority.issue_edge(
+            node_id=node_id,
+            runtime=runtime,
+            public_key=public_key,
+            capabilities=capabilities,
+            expires_at=expires_at,
+        )
+
     def admit(
         self,
         *,
@@ -554,6 +673,10 @@ class MeshEnrollmentCoordinator:
 
         - Fresh worker: issues + verifies a token, records enrollment -> ``enrolled``.
         - Re-admission (same identity file, same worker_id): re-admits -> ``reconnected``.
+        - Inverted enrollment: a caller-supplied ``token`` may be a shared
+          edge-fleet claim (``mindroom.edge-enrollment/1``, ``node_id``) issued
+          through ``issue_edge_token``; the registry normalizes ``node_id`` to
+          the mesh ``worker_id`` and re-admits on verification.
         - Stale/duplicate/equivocation: raises ``MeshEnrollmentError``.
         """
         self._assert_phase_b_gate()
@@ -600,6 +723,23 @@ def _worker(row: tuple[object, ...]) -> MeshEnrolledWorker:
 
 def _json_text(value: object) -> str:
     return _json(value).decode()
+
+
+def _claim_schema(token: str) -> str:
+    """Decode the claim's ``schema`` field to route verification.
+
+    Returns ``""`` for any token that cannot be decoded (so the caller treats
+    it as a malformed mesh claim); never raises for a structurally invalid
+    token.
+    """
+    try:
+        encoded_payload, _signature = token.split(".", 1)
+        claim = json.loads(_unb64(encoded_payload))
+    except (ValueError, json.JSONDecodeError):
+        return ""
+    if not isinstance(claim, dict):
+        return ""
+    return str(claim.get("schema") or "")
 
 
 def _utc_now() -> datetime:

@@ -380,9 +380,13 @@ class TestDefaultOffNoop:
 
 
 class TestPhaseBHandshakeGate:
-    def test_phase_b_constant_is_false(self):
-        # This is the hard human gate: Phase B must never be on by default.
-        assert PHASE_B_HANDSHAKE_ENABLED is False
+    def test_phase_b_constant_is_cleared(self):
+        # Phase B Unit 1 gate CLEARED on 2026-08-07 after a real live inverted
+        # enrollment handshake passed against the live P9 edge-node surface
+        # (POST /api/edge-fleet/enroll, HTTP 200).  Clearing only *permits* the
+        # handshake; with no bound ``handshake`` callable the coordinator stays
+        # inert and makes no network call.
+        assert PHASE_B_HANDSHAKE_ENABLED is True
 
     def test_default_coordinator_does_not_call_handshake(self, tmp_path):
         """By default no network handshake is performed (handshake stays None)."""
@@ -395,14 +399,26 @@ class TestPhaseBHandshakeGate:
         coord.admit(worker_id="alpha", agent_name="alpha-agent", room_id="!alpha:localhost")
         assert called == []  # no external call
 
-    def test_enabling_handshake_without_approval_raises(self, tmp_path):
-        """Setting handshake_enabled while the module gate is OFF must refuse, not call."""
+    def test_cleared_gate_invokes_bound_handshake_only_when_enabled(self, tmp_path):
+        """After the gate is CLEARED, a bound handshake runs only when explicitly enabled."""
+        coord = _coordinator(tmp_path, handshake=None, handshake_enabled=True)
+        # No ``handshake`` bound -> the coordinator stays inert even with the
+        # gate cleared and ``handshake_enabled=True``.
+        result = coord.admit(worker_id="alpha", agent_name="alpha-agent", room_id="!alpha:localhost")
+        assert result.status in {"enrolled", "reconnected"}
+
+        # With a bound handshake AND handshake_enabled=True, the external call runs.
         called: list[str] = []
 
         def fake_handshake() -> None:
             called.append("handshake")
 
-        coord = _coordinator(tmp_path, handshake=fake_handshake, handshake_enabled=True)
-        with pytest.raises(MeshEnrollmentError, match="not approved"):
-            coord.admit(worker_id="alpha", agent_name="alpha-agent", room_id="!alpha:localhost")
-        assert called == []  # the network call was refused, not performed
+        coord2 = _coordinator(tmp_path, handshake=fake_handshake, handshake_enabled=True)
+        coord2.admit(worker_id="alpha", agent_name="alpha-agent", room_id="!alpha:localhost")
+        assert called == ["handshake"]
+
+        # With a bound handshake but handshake_enabled=False, no external call.
+        called.clear()
+        coord3 = _coordinator(tmp_path, handshake=fake_handshake, handshake_enabled=False)
+        coord3.admit(worker_id="alpha", agent_name="alpha-agent", room_id="!alpha:localhost")
+        assert called == []
