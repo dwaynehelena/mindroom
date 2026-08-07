@@ -135,12 +135,11 @@ def test_resolve_room_aliases_does_not_reparse_yaml(
     assert safe_load_calls == 1
 
 
-def test_matrix_state_cached_reads_do_not_stat_the_file(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    """Repeated reads of cached state must not stat the file."""
+def test_matrix_state_cached_reads_stat_but_do_not_reparse_yaml(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """Repeated reads of an unchanged file stat it but must not reparse YAML."""
     runtime_paths = test_runtime_paths(tmp_path)
     state_file = _seed_state(runtime_paths, "dev", "!dev:localhost")
     _load_matrix_state_file_cached.cache_clear()
-    monkeypatch.setattr(matrix_state, "monotonic", lambda: 0.0)
     first = matrix_state_for_runtime(runtime_paths)
     stat_calls = 0
     original_stat = Path.stat
@@ -153,12 +152,25 @@ def test_matrix_state_cached_reads_do_not_stat_the_file(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(matrix_state.Path, "stat", counting_stat)
 
+    safe_load_calls = 0
+    real_safe_load = matrix_state.yaml_io.safe_load
+
+    def _counting_safe_load(stream: object) -> object:
+        nonlocal safe_load_calls
+        safe_load_calls += 1
+        return real_safe_load(stream)
+
+    monkeypatch.setattr(matrix_state.yaml_io, "safe_load", _counting_safe_load)
+
     second = matrix_state_for_runtime(runtime_paths)
     third = matrix_state_for_runtime(runtime_paths)
 
+    # The file is stat'ed on each read to detect out-of-band edits...
+    assert stat_calls == 2
+    # ...but the unchanged signature still short-circuits YAML reparse.
     assert second is first
     assert third is first
-    assert stat_calls == 0
+    assert safe_load_calls == 0
 
 
 def test_matrix_state_cache_observes_first_write_after_missing_read(tmp_path: Path) -> None:
@@ -176,14 +188,11 @@ def test_matrix_state_cache_observes_first_write_after_missing_read(tmp_path: Pa
     assert written.get_room("dev") is not None
 
 
-def test_matrix_state_cache_observes_external_write_after_stat_ttl(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    """A write from another process must become visible after the stat TTL."""
+def test_matrix_state_cache_observes_external_write_immediately(tmp_path: Path) -> None:
+    """An out-of-band edit must be observed immediately, not after a stat TTL."""
     runtime_paths = test_runtime_paths(tmp_path)
     state_file = _seed_state(runtime_paths, "dev", "!dev:localhost")
     _load_matrix_state_file_cached.cache_clear()
-    now = 0.0
-    monkeypatch.setattr(matrix_state, "monotonic", lambda: now)
-    monkeypatch.setattr(matrix_state, "_MATRIX_STATE_STAT_TTL_SECONDS", 1.0)
 
     first = matrix_state_for_runtime(runtime_paths)
     external = first.model_copy(deep=True)
@@ -196,7 +205,6 @@ def test_matrix_state_cache_observes_external_write_after_stat_ttl(tmp_path: Pat
         ),
         encoding="utf-8",
     )
-    now = 1.0
 
     second = matrix_state_for_runtime(runtime_paths)
 

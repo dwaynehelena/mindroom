@@ -5,13 +5,11 @@ from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from time import monotonic
 
 from pydantic import BaseModel, Field, field_serializer
 
 from mindroom import constants, yaml_io
 
-_MATRIX_STATE_STAT_TTL_SECONDS = 1.0
 _matrix_state_write_generation = 0
 
 
@@ -181,16 +179,20 @@ def get_room_alias_from_id(room_id: str, runtime_paths: constants.RuntimePaths) 
 
 
 def _matrix_state_cache_key(state_file: Path) -> tuple[Path, int, int | None, int | None]:
-    """Return a key with eager local invalidation and bounded external staleness."""
-    stat_ttl_bucket = int(monotonic() / _MATRIX_STATE_STAT_TTL_SECONDS)
-    mtime_ns, size = _matrix_state_file_signature(state_file, stat_ttl_bucket)
+    """Return a key with eager local invalidation and fresh external-file detection.
+
+    The file signature is computed on every call (no TTL bucketing) so an
+    out-of-band edit to the state file is observed immediately rather than
+    being served stale for up to one stat-TTL bucket. The downstream
+    ``_load_matrix_state_file_cached`` cache still short-circuits YAML reparse
+    for unchanged files.
+    """
+    mtime_ns, size = _matrix_state_file_signature(state_file)
     return state_file, _matrix_state_write_generation, mtime_ns, size
 
 
-@lru_cache(maxsize=64)
-def _matrix_state_file_signature(state_file: Path, stat_ttl_bucket: int) -> tuple[int | None, int | None]:
-    """Stat one state file at most once per TTL bucket."""
-    del stat_ttl_bucket
+def _matrix_state_file_signature(state_file: Path) -> tuple[int | None, int | None]:
+    """Stat one state file to fingerprint its current on-disk content."""
     try:
         stat = state_file.stat()
     except OSError:
