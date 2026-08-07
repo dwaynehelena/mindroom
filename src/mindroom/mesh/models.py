@@ -112,3 +112,4 @@ class MeshOutboxEntry:
     failure_reason: str | None = None
     cancel_source: str | None = None
     cursor: str | None = None
+    target_session_id: str | None = None

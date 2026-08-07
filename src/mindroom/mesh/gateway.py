@@ -20,10 +20,8 @@ import enum
 import logging
 import os
 import threading
-import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from mindroom.mesh.cursor import MeshCursorStore
 from mindroom.mesh.lifecycle import (
@@ -33,7 +31,6 @@ from mindroom.mesh.lifecycle import (
 )
 from mindroom.mesh.loop_guard import MeshLoopError, MeshLoopGuard
 from mindroom.mesh.models import (
-    MeshDeliveryStatus,
     MeshMessage,
     MeshMessageEnvelope,
     MeshOutboxEntry,
@@ -41,10 +38,7 @@ from mindroom.mesh.models import (
     MeshWorkerRegistration,
     MeshWorkerStatus,
 )
-from mindroom.mesh.transport import MatrixMeshTransport, MeshTransport, MeshTransportError
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
+from mindroom.mesh.transport import MatrixMeshTransport, MeshTransport
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +48,7 @@ __all__ = [
     "GatewayRuntimeMode",
     "MeshGateway",
     "MeshGatewayError",
+    "MeshResumeResult",
 ]
 
 _MESH_GATEWAY_MODE_ENV = "MINDROOM_MESH_GATEWAY_MODE"
@@ -162,6 +157,10 @@ class MeshGateway:
     # keeps its exact static registration behavior.  When set and enabled, the
     # gateway admits/re-admits workers through the coordinator.
     enrollment: object | None = None
+    # Phase A cursor-resume coordinator.  When ``None`` or not ``enabled``
+    # (default-OFF) ``resume_worker`` is inert and the gateway keeps its exact
+    # behavior; ``worker_reconnect`` still returns the saved cursor unchanged.
+    resume: object | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _workers: dict[str, MeshWorkerRegistration] = field(default_factory=dict, repr=False)
     _outbox: dict[str, MeshOutboxEntry] = field(default_factory=dict, repr=False)
@@ -174,6 +173,10 @@ class MeshGateway:
         # Share the gateway's lifecycle sink with the transport so all events
         # (routing, delivery, cancellation) accumulate in one place.
         self.transport.lifecycle_sink = self._lifecycle_sink
+        # Share the gateway's lifecycle sink with the resume coordinator so
+        # replayed entries emit into the same lifecycle stream.
+        if self.resume is not None and hasattr(self.resume, "lifecycle_sink"):
+            self.resume.lifecycle_sink = self._lifecycle_sink
 
     @property
     def lifecycle_events(self) -> list[MeshLifecycleEvent]:
@@ -435,9 +438,44 @@ class MeshGateway:
         """Return the last reconnect cursor for a worker, if any."""
         return self.cursor_store.load(worker_id)
 
+    async def resume_worker(
+        self,
+        worker_id: str,
+        *,
+        session_id: str | None = None,
+    ) -> MeshResumeResult:
+        """Resume a worker from its saved cursor, replaying undelivered entries.
+
+        Fully additive: delegates to the Phase A ``resume`` coordinator.  When
+        the coordinator is absent or not ``enabled`` (default-OFF) this returns
+        a benign no-op result and the gateway behavior is unchanged.  When
+        enabled, this emits a ``worker_reconnected`` lifecycle event and
+        advances the worker's cursor after replaying the entries delivered
+        after the last certified point (no duplicate delivery, no full replay).
+        """
+        coordinator = self.resume
+        if coordinator is None or not getattr(coordinator, "enabled", False):
+            return MeshResumeResult(
+                worker_id=worker_id,
+                session_id=session_id,
+                replayed_outbox_ids=(),
+                skipped_outbox_ids=(),
+                advanced_cursor=None,
+                resumed=False,
+            )
+        result = await coordinator.resume(worker_id, session_id=session_id)
+        self._lifecycle_sink.append(
+            MeshLifecycleEvent(
+                event_type="worker_reconnected",
+                worker_id=worker_id,
+            ),
+        )
+        return result
+
 
 # Re-export for __init__
 from mindroom.mesh.cursor import MeshReconnectCursor  # noqa: E402
+from mindroom.mesh.reconnect import MeshResumeResult  # noqa: E402
 
 
 @dataclass

@@ -30,6 +30,7 @@ MeshLifecycleEventType = Literal[
     "worker_reconnected",
     "message_routed",
     "message_delivered",
+    "message_replayed",
     "message_failed",
     "message_cancelled",
     "message_dropped_loop",
@@ -42,6 +43,7 @@ _CONTENT_FREE_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "message_routed",
         "message_delivered",
+        "message_replayed",
         "message_failed",
         "message_cancelled",
         "message_dropped_loop",
@@ -101,6 +103,8 @@ def content_free_lifecycle_outcomes(events: list[MeshLifecycleEvent]) -> dict[st
         key = event.outbox_id or event.correlation_id or f"lifecycle-{event.timestamp}"
         if event.event_type == "message_delivered":
             outcomes[key] = "delivered"
+        elif event.event_type == "message_replayed":
+            outcomes[key] = "replayed"
         elif event.event_type == "message_failed":
             outcomes[key] = "failed"
         elif event.event_type == "message_cancelled":

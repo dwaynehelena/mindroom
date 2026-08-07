@@ -50,6 +50,13 @@ from mindroom.mesh.models import (
     MeshWorkerRegistration,
     MeshWorkerStatus,
 )
+from mindroom.mesh.reconnect import (
+    MESH_RESUME_ENV,
+    PHASE_B_RESUME_ENABLED,
+    MeshReconnectCoordinator,
+    MeshResumeResult,
+    resume_flag_enabled,
+)
 from mindroom.mesh.transport import (
     MatrixMeshTransport,
     MeshTransport,
@@ -57,7 +64,9 @@ from mindroom.mesh.transport import (
 )
 
 __all__ = [
+    "MESH_RESUME_ENV",
     "PHASE_B_HANDSHAKE_ENABLED",
+    "PHASE_B_RESUME_ENABLED",
     "GatewayExecutionGate",
     "GatewayOnlyRuntime",
     "GatewayRuntimeMode",
@@ -78,7 +87,9 @@ __all__ = [
     "MeshLoopVerdict",
     "MeshMessage",
     "MeshMessageEnvelope",
+    "MeshReconnectCoordinator",
     "MeshReconnectCursor",
+    "MeshResumeResult",
     "MeshRouteDecision",
     "MeshTransport",
     "MeshTransportError",
@@ -87,4 +98,5 @@ __all__ = [
     "MeshWorkerStatus",
     "content_free_lifecycle_outcomes",
     "enrollment_flag_enabled",
+    "resume_flag_enabled",
 ]

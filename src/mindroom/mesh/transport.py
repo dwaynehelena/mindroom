@@ -25,7 +25,6 @@ from mindroom.mesh.models import MeshDeliveryStatus, MeshMessage, MeshOutboxEntr
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from mindroom.mesh.models import MeshWorkerRegistration
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +33,23 @@ __all__ = [
     "MeshTransport",
     "MeshTransportError",
 ]
+
+
+def _cursor_outbox_id(cursor_value: str) -> str | None:
+    """Extract the outbox_id embedded in a ``mesh-cursor-<outbox_id>-<ts>`` value.
+
+    Returns ``None`` when the cursor does not reference a mesh outbox.  Used by
+    ``_sync_from_cursor`` to locate the exact last-certified entry so replay
+    resumes strictly after it (no full replay).
+    """
+    marker = "mesh-outbox-"
+    idx = cursor_value.find(marker)
+    if idx == -1:
+        return None
+    hex_part = cursor_value[idx + len(marker) :].split("-", 1)[0]
+    if not hex_part:
+        return None
+    return f"mesh-outbox-{hex_part}"
 
 
 class MeshTransportError(RuntimeError):
@@ -178,17 +194,57 @@ class MatrixMeshTransport(MeshTransport):
         )
 
     async def _sync_from_cursor(self, worker_id: str) -> Sequence[MeshOutboxEntry]:
-        """Replay messages since the last cursor for one worker.
+        """Replay outbox entries delivered to a worker since the last cursor.
 
-        In production this would call ``sync_messages`` with the saved
-        token.  For the demo, we return entries from the in-memory queue
-        that were delivered after the cursor was saved.
+        Phase A local replay: this walks the in-memory delivery log
+        (``_delivered_messages``) and returns the entries that were delivered
+        *after* the worker's saved cursor was written.  Entries at or before
+        the cursor (i.e. already certified) are skipped so a restart does not
+        re-deliver them.
+
+        Session-aware: a session-scoped cursor only replays entries for its own
+        session (``target_session_id``).  A sessionless (v1-style) cursor is not
+        scoped and replays regardless of session.  In production (Phase B) this
+        would instead replay from the real Matrix sync token (``cursor.cursor``)
+        against a live homeserver — an external, human-gated side effect that is
+        NOT performed here.
         """
         cursor = self.cursor_store.load(worker_id)
         if cursor is None:
             return ()
-        # In production: replay from Matrix sync with token=cursor.cursor
-        # In demo: return empty (all messages already in queue)
+        # Locate the exact last-certified entry (if the cursor references one)
+        # so replay resumes strictly after it — no full replay.
+        last_outbox_id = _cursor_outbox_id(cursor.cursor)
+        # Session scoping comes from the cursor itself.
+        target_session = cursor.session_id
+
+        # Build the worker's delivered entries in delivery-log order (the same
+        # order they were appended by ``_deliver_to_room``), filtered by the
+        # optional target session.
+        ordered: list[MeshOutboxEntry] = []
+        for entries in self._delivered_messages.values():
+            for entry, _message in entries:
+                if entry.target_worker_id != worker_id:
+                    continue
+                if target_session is not None and entry.target_session_id != target_session:
+                    continue
+                ordered.append(entry)
+
+        if last_outbox_id is None:
+            # No mesh outbox referenced by the cursor — resume conservatively
+            # from the first delivered entry (still idempotent at the
+            # coordinator: it skips entries already certified elsewhere).
+            return tuple(ordered)
+
+        # Resume strictly after the last-certified entry.
+        for idx, entry in enumerate(ordered):
+            if entry.outbox_id == last_outbox_id:
+                return tuple(ordered[idx + 1 :])
+        # The certified entry is not in the local log (e.g. it was delivered on
+        # a previous process whose in-memory log was rebuilt).  Replaying the
+        # whole ordered log is not a "full replay" of undelivered work — the
+        # coordinator still skips already-certified entries — but here we
+        # conservatively replay nothing to avoid any duplication.
         return ()
 
     def get_delivered_messages(self, room_id: str) -> list[tuple[MeshOutboxEntry, MeshMessage]]:

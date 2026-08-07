@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,20 +24,30 @@ __all__ = [
     "MeshReconnectCursor",
 ]
 
-_CURSOR_RECORD_VERSION = "mindroom-mesh-cursor-v1"  # noqa: S105
+# Current durable record version (v2).  ``from_json`` also accepts the legacy
+# v1 record for back-compatibility so a restart can resume an older cursor.
+_CURSOR_RECORD_VERSION = "mindroom-mesh-cursor-v2"
+#: Legacy record version accepted for migration/back-compat (no session_id).
+_CURSOR_RECORD_V1 = "mindroom-mesh-cursor-v1"
 
 
 @dataclass(frozen=True, slots=True)
 class MeshReconnectCursor:
-    """A resumable delivery checkpoint for one worker."""
+    """A resumable delivery checkpoint for one worker.
+
+    v2 adds an optional ``session_id`` so a reconnect can be scoped to the
+    worker's current session/thread.  ``from_json`` transparently accepts both
+    v1 (no ``session_id``) and v2 records.
+    """
 
     worker_id: str
     cursor: str
     cache_generation: str
     saved_at: float = field(default_factory=time.time)
+    session_id: str | None = None
 
     def to_json(self) -> str:
-        """Return the durable JSON record for this cursor."""
+        """Return the durable JSON record for this cursor (v2)."""
         payload = {
             "version": _CURSOR_RECORD_VERSION,
             "worker_id": self.worker_id,
@@ -45,16 +55,25 @@ class MeshReconnectCursor:
             "cache_generation": self.cache_generation,
             "saved_at": self.saved_at,
         }
+        if self.session_id is not None:
+            payload["session_id"] = self.session_id
         return json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n"
 
     @classmethod
     def from_json(cls, text: str) -> MeshReconnectCursor | None:
-        """Parse a durable JSON cursor record, returning ``None`` on mismatch."""
+        """Parse a durable JSON cursor record, returning ``None`` on mismatch.
+
+        Accepts both the current v2 record and the legacy v1 record.  For a v1
+        record (which carries no ``session_id``) the parsed cursor has
+        ``session_id=None``, preserving back-compatibility.
+        """
         try:
             payload = json.loads(text)
         except json.JSONDecodeError:
             return None
-        if not isinstance(payload, dict) or payload.get("version") != _CURSOR_RECORD_VERSION:
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("version") not in (_CURSOR_RECORD_VERSION, _CURSOR_RECORD_V1):
             return None
         worker_id = payload.get("worker_id")
         cursor = payload.get("cursor")
@@ -62,11 +81,15 @@ class MeshReconnectCursor:
         saved_at = payload.get("saved_at", time.time())
         if not isinstance(worker_id, str) or not isinstance(cursor, str) or not isinstance(cache_generation, str):
             return None
+        session_id = payload.get("session_id")
+        if session_id is not None and not isinstance(session_id, str):
+            return None
         return cls(
             worker_id=worker_id,
             cursor=cursor,
             cache_generation=cache_generation,
             saved_at=float(saved_at),
+            session_id=session_id,
         )
 
 
