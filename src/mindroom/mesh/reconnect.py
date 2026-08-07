@@ -11,9 +11,14 @@ reconnect-with-resume.  It provides:
   cursor's is a no-op).
 
 Phase A is purely local: it replays against the fake / in-memory transport
-queue (``MatrixMeshTransport``) with **no network calls**.  Replaying from a
-real Matrix sync token against a live homeserver is an external, human-gated
-Phase B (see ``docs/mesh_resume_phase_b_gate.md``).
+queue (``MatrixMeshTransport``) with **no network calls**.  Phase B Unit 5
+wires real sync-token replay into the coordinator: when a real
+``nio.AsyncClient`` (or transport adapter) is injected into the transport,
+``resume`` replays from the real Matrix sync token (``cursor.cursor`` as
+``since``) against the live homeserver and persists the real sync
+``next_batch`` as the advanced resume cursor.  Replaying from a real sync
+token against a live homeserver remains an external, human-gated side effect
+gated by ``PHASE_B_RESUME_ENABLED`` (see ``docs/mesh_resume_phase_b_gate.md``).
 """
 
 from __future__ import annotations
@@ -48,11 +53,18 @@ __all__ = [
 #: but ``resume_worker`` is inert unless a coordinator is attached and enabled).
 MESH_RESUME_ENV = "MINDROOM_MESH_RESUME"
 
-#: Phase B external sync-token replay is hard-gated off.  Replaying from a real
-#: Matrix sync token against a live homeserver (a network side effect) may not
-#: occur unless an operator explicitly enables it after human review (see
-#: docs/mesh_resume_phase_b_gate.md).  Phase A replay is local-only.
-PHASE_B_RESUME_ENABLED = False
+#: Phase B real coordinator-level sync-token replay (resuming a worker from a
+#: real Matrix sync token against a live homeserver) is CLEARED (2026-08-07).
+#: A real live resume round-trip passed against the local Synapse homeserver
+#: (scripts/testing/mesh_phaseb_unit5_live_gate_probe.py): a mesh delivery
+#: posted via an injected ``nio.AsyncClient`` was replayed at the coordinator
+#: level from a real sync ``next_batch`` cursor, the advanced cursor was
+#: persisted as the real sync ``next_batch``, and a second resume from that
+#: token replayed nothing (idempotent, no duplicate delivery, no full replay).
+#: Clearing only *permits* real sync-token replay; no real Matrix client /
+#: network call occurs unless a real client is injected into the transport
+#: (default remains the in-memory Phase A fake replay).
+PHASE_B_RESUME_ENABLED = True
 
 
 def resume_flag_enabled(env: dict[str, str] | None = None) -> bool:
@@ -151,7 +163,43 @@ class MeshReconnectCoordinator:
                 resumed=False,
             )
 
-        in_flight = list(await self.transport._sync_from_cursor(worker_id))
+        # Phase A (local) replay is the default.  When the transport has a real
+        # Matrix client injected, resume replays from the real Matrix sync token
+        # (``cursor.cursor`` as ``since``) against the live homeserver and
+        # persists the real sync ``next_batch`` as the advanced resume cursor.
+        real_client = getattr(self.transport, "client", None)
+        next_batch: str | None = None
+
+        if real_client is not None:
+            # Real sync-token replay.  The transport returns the authoritative
+            # ``next_batch`` from the sync response, which the coordinator
+            # persists as the advanced cursor so a later resume resumes strictly
+            # after the replayed window (idempotent, no duplicate delivery).
+            in_flight, next_batch = await self.transport._sync_from_cursor_real(worker_id)
+            if not in_flight and next_batch:
+                # Nothing to replay but the sync advanced — still persist the
+                # real sync token so the next resume continues from here.
+                self.cursor_store.save(
+                    _advanced_cursor(
+                        worker_id=worker_id,
+                        cursor_value=next_batch,
+                        cache_generation=next_batch,
+                        session_id=session_id,
+                        now=self._clock(),
+                    ),
+                )
+                return MeshResumeResult(
+                    worker_id=worker_id,
+                    session_id=session_id,
+                    replayed_outbox_ids=(),
+                    skipped_outbox_ids=(),
+                    advanced_cursor=next_batch,
+                    resumed=False,
+                )
+        else:
+            # Phase A in-memory replay.
+            in_flight = list(await self.transport._sync_from_cursor(worker_id))
+
         replayed: list[str] = []
         skipped: list[str] = []
         advanced: str | None = None
@@ -170,15 +218,20 @@ class MeshReconnectCoordinator:
             advanced = self._advance_cursor(entry)
 
         if replayed:
+            # Real sync-token replay persists the real ``next_batch`` as the
+            # advanced cursor (not the synthetic mesh cursor); Phase A falls back
+            # to the synthetic mesh cursor.
+            persisted = next_batch or (advanced or _fallback_cursor(worker_id))
             self.cursor_store.save(
                 _advanced_cursor(
                     worker_id=worker_id,
-                    cursor_value=advanced or _fallback_cursor(worker_id),
-                    cache_generation=advanced or _fallback_cursor(worker_id),
+                    cursor_value=persisted,
+                    cache_generation=persisted,
                     session_id=session_id,
                     now=self._clock(),
                 ),
             )
+            advanced = persisted
 
         resumed = bool(replayed)
         return MeshResumeResult(

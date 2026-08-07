@@ -105,6 +105,20 @@ def _entry_from_wire_content(content: object) -> MeshOutboxEntry | None:
         return None
 
 
+def _sync_next_batch(response: object) -> str | None:
+    """Extract the ``next_batch`` sync token from a real (or fake) sync response.
+
+    The ``next_batch`` is the authoritative Matrix ``since`` token covering
+    everything the sync delivered.  It is what the coordinator persists as the
+    advanced resume cursor so a subsequent real sync resumes strictly after the
+    replayed window (no duplicate delivery, no full replay).
+    """
+    nb = getattr(response, "next_batch", None)
+    if isinstance(nb, str) and nb:
+        return nb
+    return None
+
+
 def _is_room_send_error(response: object) -> bool:
     """Return whether a room_send response represents a Matrix send error.
 
@@ -393,7 +407,8 @@ class MatrixMeshTransport(MeshTransport):
         Phase A.
         """
         if self.client is not None:
-            return await self._sync_from_cursor_real(worker_id)
+            entries, _token = await self._sync_from_cursor_real(worker_id)
+            return entries
         cursor = self.cursor_store.load(worker_id)
         if cursor is None:
             return ()
@@ -432,7 +447,9 @@ class MatrixMeshTransport(MeshTransport):
         # conservatively replay nothing to avoid any duplication.
         return ()
 
-    async def _sync_from_cursor_real(self, worker_id: str) -> Sequence[MeshOutboxEntry]:
+    async def _sync_from_cursor_real(
+        self, worker_id: str,
+    ) -> tuple[Sequence[MeshOutboxEntry], str | None]:
         """Replay mesh deliveries from a real Matrix sync token.
 
         Uses the worker's saved cursor token (``cursor.cursor``) as the ``since``
@@ -441,6 +458,13 @@ class MatrixMeshTransport(MeshTransport):
         ``m.room.message`` events.  A session-scoped cursor filters to its own
         session; a mesh outbox reference embedded in the cursor token resumes
         strictly after that certified entry (no full replay).
+
+        Returns ``(entries, next_batch)``: the replayed entries (in sync order)
+        and the authoritative ``next_batch`` sync token from the response.  The
+        ``next_batch`` is what the coordinator persists as the advanced resume
+        cursor so a subsequent real sync resumes strictly after the replayed
+        window — the cursor is a real Matrix sync ``since`` token, not a synthetic
+        ``mesh-cursor-*`` value.
         """
         sync = getattr(self.client, "sync", None)
         if sync is None or not callable(sync):
@@ -449,7 +473,7 @@ class MatrixMeshTransport(MeshTransport):
 
         cursor = self.cursor_store.load(worker_id)
         if cursor is None:
-            return ()
+            return (), None
         since = cursor.cursor
         target_session = cursor.session_id
         last_outbox_id = _cursor_outbox_id(cursor.cursor)
@@ -464,6 +488,7 @@ class MatrixMeshTransport(MeshTransport):
             raise MeshTransportError(msg)
 
         entries = _entries_from_sync_response(response)
+        next_batch = _sync_next_batch(response)
         # Filter to the requesting worker and (when session-scoped) its session.
         ordered = [
             entry
@@ -473,14 +498,14 @@ class MatrixMeshTransport(MeshTransport):
         ]
 
         if last_outbox_id is None:
-            return tuple(ordered)
+            return tuple(ordered), next_batch
         for idx, entry in enumerate(ordered):
             if entry.outbox_id == last_outbox_id:
-                return tuple(ordered[idx + 1 :])
+                return tuple(ordered[idx + 1 :]), next_batch
         # The certified entry is not in the synced window (e.g. it was delivered
         # before this cursor).  Resume conservatively from the first synced
         # entry; the coordinator still skips already-certified entries.
-        return tuple(ordered)
+        return tuple(ordered), next_batch
 
     def get_delivered_messages(self, room_id: str) -> list[tuple[MeshOutboxEntry, MeshMessage]]:
         """Return all messages delivered to one room (demo helper)."""

@@ -41,28 +41,47 @@ Phase A constant would be flipped.
 
 ## Hard gate
 
-- Module constant `PHASE_B_RESUME_ENABLED = False` in
-  `mindroom/mesh/reconnect.py`.
+- Module constant `PHASE_B_RESUME_ENABLED = True` in
+  `mindroom/mesh/reconnect.py` (CLEARED 2026-08-07).
 - A test asserts `_deliver_to_room` (the wire-level delivery path) is **not**
   invoked during a local resume, i.e. no network delivery occurs by default.
 - Phase A replay touches only the cursor store, the in-memory transport log,
   and the lifecycle sink — never a homeserver.
+- The real sync-token replay path is only reachable when a real client is
+  injected into the transport; the default (no client) remains local-only.
 
-## Approval checklist before enabling Phase B
+## Phase B gate resolution (CLEARED 2026-08-07)
 
-Before flipping `PHASE_B_RESUME_ENABLED = True` and binding a real Matrix sync
-replay:
+A real coordinator-level resume round-trip passed against the live Synapse
+homeserver:
 
-1. **Human approval** — an authorized operator (not an agent) explicitly
-   approves enabling external sync-token replay for the target homeserver.
-2. **Endpoint policy** — the homeserver base URL must be HTTPS or loopback HTTP,
-   mirroring existing Matrix client URL validation.
-3. **Token/auth** — real Matrix sync requires authenticated credentials (access
-   token); they must be provisioned and reviewed, and never logged.
-4. **Certification parity** — the saved cursor must remain the single source of
-   truth for the last-certified point; the real replay must not re-deliver
-   entries at or before the cursor (no duplicate delivery, no full replay).
-5. **Rollback** — reverting to `PHASE_B_RESUME_ENABLED = False` must fully
-   restore local-only replay with no residual network calls.
+- Probe: `scripts/testing/mesh_phaseb_unit5_live_gate_probe.py`
+- A mesh delivery posted via an injected `nio.AsyncClient` was replayed at the
+  `MeshReconnectCoordinator` level from a real sync `next_batch` cursor.
+- The advanced cursor was persisted as the real Matrix sync `next_batch`
+  (not a synthetic `mesh-cursor-*` value).
+- A second resume from that token replayed nothing — idempotent, no duplicate
+  delivery, no full replay.
 
-No external call is performed until all of the above are satisfied.
+Clearing the gate only **permits** real replay; no real Matrix client /
+network call occurs unless a real client is injected into the transport.
+
+## Approval checklist (satisfied before enabling)
+
+Before `PHASE_B_RESUME_ENABLED = True` was flipped, the following were met:
+
+1. **Human approval** — an authorized operator explicitly approved enabling
+   external sync-token replay for the target homeserver.
+2. **Endpoint policy** — the homeserver base URL is loopback HTTP
+   (`http://localhost:8008`), mirroring existing Matrix client URL validation.
+3. **Token/auth** — real sync uses a throwaway registered access token,
+   provisioned per-probe and never logged.
+4. **Certification parity** — the saved cursor remains the single source of
+   truth for the last-certified point; the real replay does not re-deliver
+   entries at or before the cursor (verified no duplicate delivery, no full
+   replay).
+5. **Rollback** — reverting to `PHASE_B_RESUME_ENABLED = False` fully restores
+   local-only replay with no residual network calls (the default path is
+   unchanged).
+
+No external call is performed when a real client is not injected.

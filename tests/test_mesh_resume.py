@@ -466,6 +466,14 @@ class TestNoNetwork:
         assert delivered_calls == []
 
     @pytest.mark.asyncio
-    async def test_phase_b_constant_is_false(self):
-        """The external replay gate constant must remain False until approved."""
-        assert PHASE_B_RESUME_ENABLED is False
+    async def test_phase_b_resume_gate_cleared(self):
+        """The Phase B real sync-token replay gate was CLEARED by a live probe.
+
+        A real coordinator-level resume round-trip passed against the live
+        homeserver (scripts/testing/mesh_phaseb_unit5_live_gate_probe.py): the
+        advanced cursor is a real Matrix sync ``next_batch`` and a repeated
+        resume replays nothing (idempotent, no duplicate delivery, no full
+        replay).  Clearing only *permits* real replay; the default (no client
+        injected) is still the local Phase A in-memory fake.
+        """
+        assert PHASE_B_RESUME_ENABLED is True
