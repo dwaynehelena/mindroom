@@ -73,13 +73,36 @@ class MeshSessionMappingConfig(BaseModel):
 
 
 class MeshToolStateConfig(BaseModel):
-    """Worker tool-state mirroring across the mesh."""
+    """Worker tool-state mirroring across the mesh.
+
+    Gated, additive (default-OFF).  Phase A is local-only: tool-state deltas
+    are normalized, sequenced, redacted, and forwarded into the worker's
+    mapped thread through an injectable sink — never via a real live-room
+    streaming edit (that is the external, human-gated Phase B).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = Field(
         default=False,
         description="Whether worker tool state is replicated across the mesh",
+    )
+    sink: str | None = Field(
+        default=None,
+        description="Tool-state sink name ('matrix' or 'null'); None defaults to the null no-op sink",
+    )
+    include_results: bool = Field(
+        default=False,
+        description=(
+            "Whether tool result previews are included in forwarded tool-state "
+            "metadata.  Default OFF (never leak tool results).  Gated behind "
+            "human approval: enabling requires INCLUDE_TOOL_RESULTS_PHASE_B_ENABLED."
+        ),
+    )
+    max_chunk_bytes: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional hard cap on forwarded tool-state chunk bytes (None = no cap)",
     )
 
 

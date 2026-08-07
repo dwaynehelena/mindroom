@@ -39,6 +39,7 @@ MeshLifecycleEventType = Literal[
     "worker_cancel_requested",
     "worker_cancel_acked",
     "worker_cancel_failed",
+    "tool_state_streamed",
     "gateway_started",
     "gateway_stopped",
 ]
@@ -70,6 +71,10 @@ class MeshLifecycleEvent:
     cursor: str | None = None
     failure_reason: str | None = None
     cancel_source: str | None = None
+    #: Optional count carried by aggregate lifecycle events (e.g.
+    #: ``tool_state_streamed`` reports how many tool-state deltas were
+    #: forwarded).  Content-free: never a message/tool payload.
+    count: int | None = None
 
     @property
     def is_content_free(self) -> bool:

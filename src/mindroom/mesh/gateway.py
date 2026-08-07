@@ -178,6 +178,12 @@ class MeshGateway:
     # issues a worker-facing cancel command and awaits the acknowledgment
     # (additive side effect).
     cancel_prop: object | None = None
+    # Phase A tool-state streaming coordinator.  When ``None`` or not ``enabled``
+    # (default-OFF) no worker tool-state is forwarded and the gateway keeps its
+    # exact behavior; when present and enabled, worker tool start/completed
+    # events are normalized, sequenced, redacted, and forwarded into the
+    # worker's mapped thread (additive side effect).
+    tool_state: object | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _workers: dict[str, MeshWorkerRegistration] = field(default_factory=dict, repr=False)
     _outbox: dict[str, MeshOutboxEntry] = field(default_factory=dict, repr=False)
@@ -203,6 +209,12 @@ class MeshGateway:
         # worker_cancel_failed events accumulate in the same lifecycle stream.
         if self.cancel_prop is not None and hasattr(self.cancel_prop, "lifecycle_sink"):
             self.cancel_prop.lifecycle_sink = self._lifecycle_sink
+        # Share the gateway's lifecycle sink with the tool-state streaming
+        # coordinator so content-free tool_state_streamed events accumulate in
+        # the same lifecycle stream (the tool-state payload never carries a
+        # message/tool body — privacy invariant).
+        if self.tool_state is not None and hasattr(self.tool_state, "lifecycle_sink"):
+            self.tool_state.lifecycle_sink = self._lifecycle_sink
 
     def _session_resolver(self) -> MeshSessionResolver:
         """Return the active thread/session resolver (default-OFF aware).
@@ -229,6 +241,12 @@ class MeshGateway:
     def _cancel_prop_active(self) -> bool:
         """Return whether cancellation propagation is enabled (default-OFF)."""
         coordinator = self.cancel_prop
+        return coordinator is not None and bool(getattr(coordinator, "enabled", False))
+
+    @property
+    def _tool_state_active(self) -> bool:
+        """Return whether tool-state streaming is enabled (default-OFF)."""
+        coordinator = self.tool_state
         return coordinator is not None and bool(getattr(coordinator, "enabled", False))
 
     @property
@@ -577,6 +595,49 @@ class MeshGateway:
         if registration is None:
             return None
         return self._session_resolver().resolve_worker(registration)
+
+    def stream_tool_start(
+        self,
+        worker_id: str,
+        tool: object | None,
+    ) -> object | None:
+        """Stream one worker tool-start delta into the worker's mapped thread.
+
+        Fully additive: when tool-state streaming is enabled (default-OFF, a
+        present + enabled ``tool_state`` coordinator), this resolves the
+        worker's canonical session/thread (Item 2 mapping) and forwards the
+        normalized, sequenced, redacted trace into the correct thread.  When
+        default-OFF, this is a benign no-op returning ``None``.
+        """
+        if not self._tool_state_active or self.tool_state is None or tool is None:
+            return None
+        resolution = self.worker_session(worker_id)
+        if resolution is None:
+            return None
+        forward = getattr(self.tool_state, "forward_start", None)
+        if forward is None:
+            return None
+        return forward(resolution, tool)
+
+    def stream_tool_complete(
+        self,
+        worker_id: str,
+        tool: object | None,
+    ) -> object | None:
+        """Stream one worker tool-completed delta into the worker's mapped thread.
+
+        Fully additive and symmetric with ``stream_tool_start``.  Default-OFF is
+        a benign no-op returning ``None``.
+        """
+        if not self._tool_state_active or self.tool_state is None or tool is None:
+            return None
+        resolution = self.worker_session(worker_id)
+        if resolution is None:
+            return None
+        forward = getattr(self.tool_state, "forward_complete", None)
+        if forward is None:
+            return None
+        return forward(resolution, tool)
 
     def delivery_target(self, entry: MeshOutboxEntry) -> MessageTarget:
         """Build a thread-aware ``MessageTarget`` for delivering one outbox entry.
