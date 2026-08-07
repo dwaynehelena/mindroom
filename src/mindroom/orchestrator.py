@@ -90,7 +90,7 @@ from mindroom.workers.runtime import clear_worker_validation_snapshot_cache, shu
 
 from . import file_watcher
 from .bot import AgentBot, TeamBot, create_bot_for_entity
-from .config.main import Config, load_config
+from .config.main import Config, ConfigRuntimeValidationError, load_config
 from .credentials_sync import sync_env_to_credentials
 from .logging_config import get_logger, setup_logging
 from .orchestration.config_lifecycle import ConfigReloadLifecycle
@@ -1028,6 +1028,13 @@ class _MultiAgentOrchestrator:
         logger.info("Initializing multi-agent system...")
 
         config = await asyncio.to_thread(load_config, self.runtime_paths, tolerate_plugin_load_errors=True)
+        if not config.agents:
+            msg = (
+                "Agent configuration has no agents defined. Add at least one entry under the "
+                f"'agents:' section in {self.config_path} so the runtime boots with a configured "
+                "agent instead of a router-only runtime."
+            )
+            raise ConfigRuntimeValidationError(msg)
         hook_registry = await asyncio.to_thread(self._build_hook_registry, config)
         entity_names = configured_entity_names(config)
         self._preflight_account_provisioning(config, entity_names=entity_names, include_internal_user=True)

@@ -1336,7 +1336,20 @@ class TestMultiAgentOrchestrator:
     async def test_orchestrator_initialize_uses_custom_config_path(self, tmp_path: Path) -> None:
         """Initialize should load the exact config file owned by the orchestrator."""
         config_path = tmp_path / "custom-config.yaml"
-        mock_config = _runtime_bound_config(Config(router=RouterConfig(model="default")), tmp_path)
+        mock_config = _runtime_bound_config(
+            Config(
+                agents={
+                    "general": {
+                        "display_name": "GeneralAgent",
+                        "role": "General assistant",
+                        "model": "default",
+                    },
+                },
+                models={"default": {"provider": "test", "id": "test-model"}},
+                router=RouterConfig(model="default"),
+            ),
+            tmp_path,
+        )
 
         with (
             patch("mindroom.orchestrator.load_config", return_value=mock_config) as mock_load_config,
@@ -1351,6 +1364,12 @@ class TestMultiAgentOrchestrator:
                             agent_name=ROUTER_AGENT_NAME,
                             user_id="@mindroom_router:localhost",
                             display_name="Router",
+                            password=TEST_PASSWORD,
+                        ),
+                        "general": AgentMatrixUser(
+                            agent_name="general",
+                            user_id="@mindroom_general:localhost",
+                            display_name="GeneralAgent",
                             password=TEST_PASSWORD,
                         ),
                     },
@@ -1478,7 +1497,7 @@ class TestMultiAgentOrchestrator:
         """Startup must not swap the live hook runtime before user-account prep succeeds."""
         orchestrator = _MultiAgentOrchestrator(runtime_paths=TestAgentBot._runtime_paths(tmp_path))
         config = MagicMock()
-        config.agents = {}
+        config.agents = {"general": MagicMock(display_name="GeneralAgent")}
         config.teams = {}
         initial_hook_registry = orchestrator.hook_registry
         new_hook_registry = HookRegistry.empty()
