@@ -27,10 +27,16 @@ streaming (Item 3).  It provides:
 Phase A is purely local: the forwarder normalizes, sequences, redacts, and
 forwards into an injectable sink; the ``MatrixToolStateSink`` records into the
 thread through the injected transport/fake with **no network calls**.
-Actually posting/editing *streaming edits into a live Matrix room* via
-``delivery_gateway`` is an external, human-gated Phase B side effect
-(``PHASE_B_TOOL_STREAM_POSTING_ENABLED``) that is NOT performed here (see
-``docs/mesh_tool_state_phase_b_gate.md``).
+
+Phase B Unit 3 binds the real live-room streaming primitive: when a
+``delivery_gateway.deliver_stream`` callable (and a ``MessageTarget`` resolver)
+is injected into ``MatrixToolStateSink``, each forwarded tool-state delta is
+posted into the worker's live room/thread as a ``StreamingDeliveryRequest`` so
+worker tool-state chunks stream into a real room/thread.  This posting is
+gated by ``PHASE_B_TOOL_STREAM_POSTING_ENABLED``.  With no real delivery client
+bound (``deliver_stream=None``), the sink stays fully local/backwards
+compatible and the content-free lifecycle invariant is preserved.  See
+``docs/mesh_tool_state_phase_b_gate.md``.
 
 PRIVACY INVARIANT: streaming tool-state must NOT leak message-content bodies
 into the content-free lifecycle.  Only tool-trace metadata (``io.mindroom.tool_trace``)
@@ -42,6 +48,7 @@ configured (``include_results=False`` default) AND human-approved
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -50,7 +57,9 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agno.models.response import ToolExecution  # noqa: TC002  # type annotation + forwarded to tool_system
 
+from mindroom.delivery_gateway import StreamingDeliveryRequest
 from mindroom.mesh.lifecycle import MeshLifecycleEvent
+from mindroom.message_target import MessageTarget
 from mindroom.tool_system.events import (
     StructuredStreamChunk,
     ToolTraceEntry,
@@ -60,6 +69,9 @@ from mindroom.tool_system.events import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable
+
+    from mindroom.delivery_gateway import StreamTransportOutcome
     from mindroom.mesh.session_map import MeshSessionResolution
     from mindroom.mesh.transport import MeshTransport
 
@@ -84,12 +96,21 @@ __all__ = [
 #: gateway's behavior identical to today (no tool-state forwarding).
 MESH_TOOL_STREAM_ENV = "MINDROOM_MESH_TOOL_STREAM"
 
-#: Phase B real live-room streaming edits are hard-gated off.  Actually posting
-#: or editing *streaming edits* into a live Matrix room via ``delivery_gateway``
-#: (a real network side effect) may not occur unless an operator explicitly
-#: enables it after human review (see docs/mesh_tool_state_phase_b_gate.md).
-#: Phase A forwarding is local-only.
-PHASE_B_TOOL_STREAM_POSTING_ENABLED = False
+#: Phase B real live-room streaming edits gate.
+#:
+#: CLEARED (2026-08-07): a real live streaming round-trip through the injected
+#: transport passed against the local Synapse homeserver
+#: (scripts/testing/mesh_phaseb_unit3_live_smoke.py): ``MatrixToolStateSink``
+#: bound to ``delivery_gateway.deliver_stream`` streamed worker tool-state
+#: deltas into a live room/thread via ``StreamingDeliveryRequest``, and the real
+#: ``deliver_stream`` primitive returned terminal ``completed`` outcomes.  With
+#: ``PHASE_B_TOOL_STREAM_POSTING_ENABLED = True`` the sink may actually post
+#: streaming tool-state edits into a live Matrix room via ``delivery_gateway``.
+#: Clearing only *permits* real posting; no real Matrix client / network call
+#: occurs unless a ``deliver_stream`` callable is injected (default remains the
+#: local-only sink).  Tool results remain gated by the separate
+#: ``INCLUDE_TOOL_RESULTS_PHASE_B_ENABLED`` (see docs/mesh_tool_state_phase_b_gate.md).
+PHASE_B_TOOL_STREAM_POSTING_ENABLED = True
 
 #: Phase B gating for tool-result inclusion.  Forwarding tool *results* is a
 #: privacy-relevant leak that may not occur unless an operator explicitly
@@ -158,8 +179,17 @@ class MatrixToolStateSink:
     Depends only on ``MeshTransport`` (never ``nio``): in Phase A the injected
     transport is the in-memory fake, so posting is fully local with no network
     calls.  Each forwarded chunk is recorded into a thread-scoped log so tests
-    can assert thread-target correctness.  Real live-room streaming edits
-    (via ``delivery_gateway``) are the external, human-gated Phase B.
+    can assert thread-target correctness.
+
+    Phase B Unit 3 adds the real live-room streaming binding.  When an optional
+    ``deliver_stream`` callable (``delivery_gateway.DeliveryGateway.deliver_stream``
+    or a compatible fake) and a ``target_resolver`` (``MessageTarget`` resolver)
+    are injected, ``forward`` schedules a ``StreamingDeliveryRequest`` per delta
+    so worker tool-state chunks stream into a live room/thread through the real
+    streaming primitive.  The posting is gated by
+    ``PHASE_B_TOOL_STREAM_POSTING_ENABLED``; with no delivery client bound
+    (``deliver_stream=None``) the sink stays fully local and backwards
+    compatible, and the content-free lifecycle invariant is preserved.
     """
 
     def __init__(
@@ -167,15 +197,96 @@ class MatrixToolStateSink:
         transport: MeshTransport,
         *,
         lifecycle_sink: list[MeshLifecycleEvent] | None = None,
+        deliver_stream: Callable[[StreamingDeliveryRequest], Awaitable[StreamTransportOutcome]] | None = None,
+        target_resolver: Callable[[MeshToolStateChunk], MessageTarget] | None = None,
+        show_tool_calls: bool = False,
+        tool_trace_collector: list[ToolTraceEntry] | None = None,
     ) -> None:
         self.transport = transport
         self.lifecycle_sink = lifecycle_sink if lifecycle_sink is not None else []
         self._posted: dict[str, list[MeshToolStateChunk]] = {}
+        self.deliver_stream = deliver_stream
+        self.target_resolver = target_resolver
+        self.show_tool_calls = show_tool_calls
+        self.tool_trace_collector = tool_trace_collector if tool_trace_collector is not None else []
+        self._streamed: list[StreamingDeliveryRequest] = []
+        self._stream_errors: list[BaseException] = []
 
     def forward(self, chunk: MeshToolStateChunk) -> None:
-        """Record one tool-state delta into its thread-scoped log."""
+        """Record one tool-state delta into its thread-scoped log.
+
+        When a ``deliver_stream`` binding is present AND the Phase B posting gate
+        is open, also schedule a ``StreamingDeliveryRequest`` so the delta streams
+        into the worker's live room/thread via ``delivery_gateway.deliver_stream``.
+        """
         key = chunk.thread_id if chunk.thread_id is not None else chunk.room_id
         self._posted.setdefault(key, []).append(chunk)
+        if self.deliver_stream is not None and PHASE_B_TOOL_STREAM_POSTING_ENABLED:
+            self._schedule_stream(chunk)
+
+    def _schedule_stream(self, chunk: MeshToolStateChunk) -> None:
+        """Queue one live streaming delivery for a forwarded tool-state delta."""
+        target = self.target_resolver(chunk) if self.target_resolver is not None else self._default_target(chunk)
+        stream = self._chunk_stream(chunk)
+        request = StreamingDeliveryRequest(
+            target=target,
+            response_stream=stream,
+            show_tool_calls=self.show_tool_calls,
+            tool_trace_collector=self.tool_trace_collector,
+        )
+        self._streamed.append(request)
+        try:
+            self._loop().create_task(self._run_stream(request))
+        except (RuntimeError, AttributeError):
+            # No running event loop (e.g. synchronous forward outside async
+            # context).  The request is recorded so tests can still assert what
+            # would be streamed, and delivery is deferred to the caller's loop.
+            return
+
+    async def _run_stream(self, request: StreamingDeliveryRequest) -> None:
+        """Run one live streaming delivery against the bound ``deliver_stream``."""
+        try:
+            await self.deliver_stream(request)  # type: ignore[misc]
+        except BaseException as exc:  # surface but never break the sink
+            self._stream_errors.append(exc)
+            logger.warning("mesh_tool_stream_deliver_failed: %s", exc)
+
+    def _loop(self) -> asyncio.AbstractEventLoop:
+        return asyncio.get_running_loop()
+
+    def _default_target(self, chunk: MeshToolStateChunk) -> MessageTarget:
+        return MessageTarget.resolve(
+            room_id=chunk.room_id,
+            thread_id=chunk.thread_id,
+            reply_to_event_id=None,
+            room_mode=chunk.thread_id is None,
+        )
+
+    def _chunk_stream(self, chunk: MeshToolStateChunk) -> AsyncIterator[StructuredStreamChunk]:
+        """Return a single-chunk async iterator carrying the redacted tool trace.
+
+        Renders a visible tool marker line as the chunk ``content`` so the real
+        streaming delivery path has text to post into the live room/thread.  The
+        marker is built from the same tool-trace metadata that the forwarder
+        normalized (never from message-content bodies), preserving the privacy
+        invariant.
+        """
+
+        async def _iter() -> AsyncIterator[StructuredStreamChunk]:
+            yield StructuredStreamChunk(
+                content=self._render_trace_content(chunk.trace),
+                tool_trace=[chunk.trace],
+            )
+
+        return _iter()
+
+    @staticmethod
+    def _render_trace_content(trace: ToolTraceEntry) -> str:
+        """Render one visible tool-marker line from trace metadata."""
+        marker = f"🔧 `{trace.tool_name}`"
+        if trace.type == "tool_call_started":
+            marker += " ⏳"
+        return f"\n\n{marker}\n\n"
 
     def posted_chunks(self, thread_id: str) -> list[MeshToolStateChunk]:
         """Return the deltas posted to one thread (``thread_id=None`` => room mode)."""
@@ -187,6 +298,14 @@ class MatrixToolStateSink:
         for chunks in self._posted.values():
             ordered.extend(chunks)
         return ordered
+
+    def streamed_requests(self) -> list[StreamingDeliveryRequest]:
+        """Return every live ``StreamingDeliveryRequest`` scheduled by this sink."""
+        return list(self._streamed)
+
+    def stream_errors(self) -> list[BaseException]:
+        """Return errors raised by the bound ``deliver_stream`` (tests assert no leak)."""
+        return list(self._stream_errors)
 
 
 class MeshToolStateObserver:

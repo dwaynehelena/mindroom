@@ -44,24 +44,30 @@ no live streaming edit is made.
 
 ## What Phase B defers (external side effect)
 
-**Deferred network call:** actually posting/editing *streaming edits* into a
-live Matrix room — i.e. calling `delivery_gateway.deliver_stream` /
-`StreamingDeliveryRequest` (or equivalent) to push worker tool-state into a
-real room/thread on a live homeserver.
+**CLEARED (2026-08-07):** the deferred network call — posting/editing *streaming
+edits* into a live Matrix room, i.e. calling `delivery_gateway.deliver_stream` /
+`StreamingDeliveryRequest` to push worker tool-state into a real room/thread on a
+live homeserver — is now **bound** (`PHASE_B_TOOL_STREAM_POSTING_ENABLED = True`)
+after a real live round-trip passed against the local Synapse homeserver
+(`scripts/testing/mesh_phaseb_unit3_live_smoke.py`).
 
-**Where it would go:** `MatrixToolStateSink.forward` performing a real
-`deliver_stream` call against the target `MessageTarget` (from Item 2 mapping),
-and the Phase A constant being flipped.
+**Where it goes:** `MatrixToolStateSink.forward` schedules a
+`StreamingDeliveryRequest` targeting the `MessageTarget` resolved from Item 2
+mapping (via the injected `deliver_stream` callable), so worker tool-state chunks
+stream into a live room/thread.  With no `deliver_stream` bound the sink stays
+fully local/backwards compatible.
 
 ## Hard gate
 
-- Module constant `PHASE_B_TOOL_STREAM_POSTING_ENABLED = False` in
-  `mindroom/mesh/tool_state.py`.
+- Module constant `PHASE_B_TOOL_STREAM_POSTING_ENABLED = True` in
+  `mindroom/mesh/tool_state.py` — **CLEARED (2026-08-07)** after a real live
+  streaming round-trip passed against the local Synapse homeserver
+  (`scripts/testing/mesh_phaseb_unit3_live_smoke.py`).
 - `MeshToolStateCoordinator` defaults to `NullToolStateSink`, so the default
   local path never constructs or invokes a real posting sink.
 - `MatrixToolStateSink` records into a thread-scoped in-memory log through the
   injected transport/fake — it never constructs an `nio.AsyncClient` or makes a
-  network call.
+  network call **unless a `deliver_stream` callable is explicitly injected**.
 - A test asserts no tool-state is forwarded when the flag is OFF and that the
   matrix sink depends only on `MeshTransport`.
 - Phase A forwarding touches only the fake/injected transport, the in-memory

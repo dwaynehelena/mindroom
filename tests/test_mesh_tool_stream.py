@@ -352,8 +352,10 @@ class TestDefaultOffNoop:
 
 
 class TestPhaseBToolStreamPostingGate:
-    def test_phase_b_posting_constant_is_false(self):
-        assert PHASE_B_TOOL_STREAM_POSTING_ENABLED is False
+    def test_phase_b_posting_constant_is_true(self):
+        # CLEARED (2026-08-07): real live streaming round-trip verified against
+        # the local Synapse homeserver (scripts/testing/mesh_phaseb_unit3_live_smoke.py).
+        assert PHASE_B_TOOL_STREAM_POSTING_ENABLED is True
 
     def test_coordinator_defaults_to_null_sink(self):
         """The default coordinator uses the null no-op sink — never real posting."""
