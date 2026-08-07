@@ -58,13 +58,17 @@ class MeshEnrollmentConfig(BaseModel):
 
 
 class MeshSessionMappingConfig(BaseModel):
-    """Session-identity mapping for mesh workers."""
+    """Session/thread mapping for mesh workers."""
 
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = Field(
         default=False,
         description="Whether session/identity mapping is active for mesh workers",
+    )
+    store_path: str | None = Field(
+        default=None,
+        description="Durable session-map storage path (directory), when mapping is enabled",
     )
 
 

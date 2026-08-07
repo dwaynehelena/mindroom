@@ -38,7 +38,12 @@ from mindroom.mesh.models import (
     MeshWorkerRegistration,
     MeshWorkerStatus,
 )
+from mindroom.mesh.session_map import (
+    MeshSessionResolution,
+    MeshSessionResolver,
+)
 from mindroom.mesh.transport import MatrixMeshTransport, MeshTransport
+from mindroom.message_target import MessageTarget
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +54,8 @@ __all__ = [
     "MeshGateway",
     "MeshGatewayError",
     "MeshResumeResult",
+    "MeshSessionResolution",
+    "MeshSessionResolver",
 ]
 
 _MESH_GATEWAY_MODE_ENV = "MINDROOM_MESH_GATEWAY_MODE"
@@ -161,6 +168,10 @@ class MeshGateway:
     # (default-OFF) ``resume_worker`` is inert and the gateway keeps its exact
     # behavior; ``worker_reconnect`` still returns the saved cursor unchanged.
     resume: object | None = None
+    # Phase A thread/session mapping coordinator.  When ``None`` or not
+    # ``enabled`` (default-OFF) routing is unchanged (room-mode only) and the
+    # gateway keeps its exact behavior.
+    session_mapping: object | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _workers: dict[str, MeshWorkerRegistration] = field(default_factory=dict, repr=False)
     _outbox: dict[str, MeshOutboxEntry] = field(default_factory=dict, repr=False)
@@ -177,6 +188,31 @@ class MeshGateway:
         # replayed entries emit into the same lifecycle stream.
         if self.resume is not None and hasattr(self.resume, "lifecycle_sink"):
             self.resume.lifecycle_sink = self._lifecycle_sink
+        # When session mapping is enabled, share the gateway's lifecycle sink
+        # with the coordinator too so binding events are observable.
+        if self.session_mapping is not None and hasattr(self.session_mapping, "lifecycle_sink"):
+            self.session_mapping.lifecycle_sink = self._lifecycle_sink
+
+    def _session_resolver(self) -> MeshSessionResolver:
+        """Return the active thread/session resolver (default-OFF aware).
+
+        When the Phase A session-mapping coordinator is present and enabled,
+        its resolver (which consults the durable map) is used.  Otherwise a
+        default room-mode resolver is returned so routing stays unchanged
+        (``thread_id=None`` everywhere).
+        """
+        coordinator = self.session_mapping
+        if coordinator is not None and getattr(coordinator, "enabled", False):
+            resolver = getattr(coordinator, "resolver", None)
+            if resolver is not None:
+                return resolver
+        return MeshSessionResolver(session_map=None)
+
+    @property
+    def _session_mapping_active(self) -> bool:
+        """Return whether thread/session mapping is enabled (default-OFF)."""
+        coordinator = self.session_mapping
+        return coordinator is not None and bool(getattr(coordinator, "enabled", False))
 
     @property
     def lifecycle_events(self) -> list[MeshLifecycleEvent]:
@@ -210,6 +246,19 @@ class MeshGateway:
             return
         self._register_worker_static(registration)
 
+    def _maybe_bind_session(self, registration: MeshWorkerRegistration) -> None:
+        """Bind a worker's stable identity to its room/thread when mapping is on.
+
+        Default-OFF: when the Phase A session-mapping coordinator is absent or
+        disabled, this is a no-op and registration behavior is unchanged.
+        """
+        coordinator = self.session_mapping
+        if coordinator is None or not getattr(coordinator, "enabled", False):
+            return
+        bind = getattr(coordinator, "bind", None)
+        if bind is not None:
+            bind(registration)
+
     def _register_worker_static(self, registration: MeshWorkerRegistration) -> None:
         """Legacy static registration path (default-OFF, unchanged behavior)."""
         with self._lock:
@@ -217,6 +266,7 @@ class MeshGateway:
                 msg = f"Worker {registration.worker_id} is already registered"
                 raise MeshGatewayError(msg)
             self._workers[registration.worker_id] = registration
+        self._maybe_bind_session(registration)
         self._lifecycle_sink.append(
             MeshLifecycleEvent(
                 event_type="worker_registered",
@@ -246,6 +296,7 @@ class MeshGateway:
         with self._lock:
             known = registration.worker_id in self._workers
             self._workers[registration.worker_id] = registration
+        self._maybe_bind_session(registration)
         if result.status == "enrolled":
             self._lifecycle_sink.append(
                 MeshLifecycleEvent(event_type="worker_enrolled", worker_id=registration.worker_id),
@@ -270,6 +321,7 @@ class MeshGateway:
                 raise MeshGatewayError(msg)
             del self._workers[worker_id]
         self.cursor_store.clear(worker_id)
+        self._maybe_unbind_session(worker_id)
         self._lifecycle_sink.append(
             MeshLifecycleEvent(
                 event_type="worker_deregistered",
@@ -277,6 +329,15 @@ class MeshGateway:
             ),
         )
         logger.info("mesh_worker_deregistered", extra={"worker_id": worker_id})
+
+    def _maybe_unbind_session(self, worker_id: str) -> None:
+        """Reap a worker's durable session binding when mapping is on (default-OFF)."""
+        coordinator = self.session_mapping
+        if coordinator is None or not getattr(coordinator, "enabled", False):
+            return
+        unbind = getattr(coordinator, "unbind", None)
+        if unbind is not None:
+            unbind(worker_id)
 
     def worker_status(self, worker_id: str) -> MeshWorkerStatus:
         """Return the current status of one worker."""
@@ -332,12 +393,37 @@ class MeshGateway:
             outbox_id = f"mesh-outbox-{uuid.uuid4().hex[:12]}"
             message_id = f"mesh-msg-{uuid.uuid4().hex[:12]}"
 
+            # Resolve canonical session + thread context for source and target.
+            # When session mapping is default-OFF this resolves to room-mode
+            # (``thread_id=None``) and the route/outbox keep their exact legacy
+            # values (``target_thread_id=None``, ``target_session_id=None``).
+            resolver = self._session_resolver()
+            mapping_active = self._session_mapping_active
+            if mapping_active:
+                source_session = resolver.resolve_worker(source)
+                target_session = resolver.resolve_worker(target)
+            else:
+                source_session = MeshSessionResolution(
+                    worker_id=source.worker_id,
+                    session_id=source.room_id,
+                    room_id=source.room_id,
+                    thread_id=None,
+                )
+                target_session = MeshSessionResolution(
+                    worker_id=target.worker_id,
+                    session_id=target.room_id,
+                    room_id=target.room_id,
+                    thread_id=None,
+                )
+
             route = MeshRouteDecision(
                 source_worker_id=message.source_worker_id,
                 target_worker_id=message.target_worker_id,
                 source_room_id=source.room_id,
                 target_room_id=target.room_id,
                 gateway_room_id=self.gateway_room_id,
+                source_thread_id=source_session.thread_id,
+                target_thread_id=target_session.thread_id,
             )
 
             entry = MeshOutboxEntry(
@@ -348,6 +434,8 @@ class MeshGateway:
                 source_room_id=source.room_id,
                 target_room_id=target.room_id,
                 gateway_room_id=self.gateway_room_id,
+                target_session_id=target_session.session_id if mapping_active else None,
+                target_thread_id=target_session.thread_id,
             )
 
             self._outbox[outbox_id] = entry
@@ -438,6 +526,35 @@ class MeshGateway:
         """Return the last reconnect cursor for a worker, if any."""
         return self.cursor_store.load(worker_id)
 
+    def worker_session(self, worker_id: str) -> MeshSessionResolution | None:
+        """Resolve the canonical session context for one registered worker.
+
+        When thread/session mapping is active this reflects the durable
+        binding; when default-OFF it resolves to room-mode.  Returns ``None``
+        for an unregistered worker.
+        """
+        with self._lock:
+            registration = self._workers.get(worker_id)
+        if registration is None:
+            return None
+        return self._session_resolver().resolve_worker(registration)
+
+    def delivery_target(self, entry: MeshOutboxEntry) -> MessageTarget:
+        """Build a thread-aware ``MessageTarget`` for delivering one outbox entry.
+
+        Reuses ``MessageTarget.resolve`` so the resolved delivery target is
+        canonical and consistent with the codebase-wide message-target rules.
+        When session mapping is default-OFF the entry carries
+        ``target_thread_id=None`` and this resolves to room-mode delivery,
+        matching the legacy behavior.
+        """
+        return MessageTarget.resolve(
+            room_id=entry.target_room_id,
+            thread_id=entry.target_thread_id,
+            reply_to_event_id=None,
+            room_mode=entry.target_thread_id is None,
+        )
+
     async def resume_worker(
         self,
         worker_id: str,
@@ -463,7 +580,15 @@ class MeshGateway:
                 advanced_cursor=None,
                 resumed=False,
             )
-        result = await coordinator.resume(worker_id, session_id=session_id)
+        # Integrate with Item 5 session-aware cursor resume: when thread/session
+        # mapping is active, resolve the worker's canonical session and hand it
+        # to the resume coordinator so replay stays in the correct thread.
+        effective_session = session_id
+        if effective_session is None and self._session_mapping_active:
+            session = self.worker_session(worker_id)
+            if session is not None:
+                effective_session = session.session_id
+        result = await coordinator.resume(worker_id, session_id=effective_session)
         self._lifecycle_sink.append(
             MeshLifecycleEvent(
                 event_type="worker_reconnected",

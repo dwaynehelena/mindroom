@@ -28,14 +28,19 @@ class MeshWorkerRegistration:
     worker_id: str
     agent_name: str
     room_id: str
+    #: Optional Matrix thread this worker's conversation is bound to.  When set,
+    #: the worker's session is thread-scoped (``room_id:$thread``); when ``None``
+    #: the worker's session is room-scoped (``room_id``), preserving the legacy
+    #: room-mode behavior.
+    thread_id: str | None = None
     endpoint: str | None = None
     auth_token: str | None = None  # noqa: S105 - structural, not a literal secret
     metadata: dict[str, str] = field(default_factory=dict)
 
     @property
     def session_id(self) -> str:
-        """Return the canonical session ID for this worker's room."""
-        return create_session_id(self.room_id, thread_id=None)
+        """Return the canonical session ID for this worker's room/thread."""
+        return create_session_id(self.room_id, thread_id=self.thread_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +80,16 @@ class MeshMessageEnvelope:
     failure_reason: str | None = None
     cancel_source: str | None = None
 
+    @property
+    def source_thread_id(self) -> str | None:
+        """Return the source worker's bound thread (may be ``None`` for room mode)."""
+        return self.route.source_thread_id
+
+    @property
+    def target_thread_id(self) -> str | None:
+        """Return the target worker's bound thread (may be ``None`` for room mode)."""
+        return self.route.target_thread_id
+
 
 @dataclass(frozen=True, slots=True)
 class MeshRouteDecision:
@@ -86,6 +101,14 @@ class MeshRouteDecision:
     target_room_id: str
     gateway_room_id: str
     relay: bool = True
+    #: Optional thread the source worker's conversation is bound to.  ``None``
+    #: means room-mode delivery (legacy behavior); a value makes the route
+    #: thread-aware so delivery targets the correct Matrix thread.
+    source_thread_id: str | None = None
+    #: Optional thread the target worker's conversation is bound to.  ``None``
+    #: means room-mode delivery (legacy behavior); a value makes the route
+    #: thread-aware so delivery targets the correct Matrix thread.
+    target_thread_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -113,3 +136,8 @@ class MeshOutboxEntry:
     cancel_source: str | None = None
     cursor: str | None = None
     target_session_id: str | None = None
+    #: Optional Matrix thread the target conversation is bound to.  ``None``
+    #: means room-mode delivery (legacy behavior).  Populated when session
+    #: mapping is enabled so the transport can build a thread-aware
+    #: ``MessageTarget`` for delivery.
+    target_thread_id: str | None = None

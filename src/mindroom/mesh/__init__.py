@@ -57,6 +57,16 @@ from mindroom.mesh.reconnect import (
     MeshResumeResult,
     resume_flag_enabled,
 )
+from mindroom.mesh.session_map import (
+    MESH_SESSION_MAP_ENV,
+    PHASE_B_THREAD_MANAGEMENT_ENABLED,
+    MeshSessionMap,
+    MeshSessionMappingCoordinator,
+    MeshSessionResolution,
+    MeshSessionResolver,
+    SessionBinding,
+    session_map_flag_enabled,
+)
 from mindroom.mesh.transport import (
     MatrixMeshTransport,
     MeshTransport,
@@ -65,8 +75,10 @@ from mindroom.mesh.transport import (
 
 __all__ = [
     "MESH_RESUME_ENV",
+    "MESH_SESSION_MAP_ENV",
     "PHASE_B_HANDSHAKE_ENABLED",
     "PHASE_B_RESUME_ENABLED",
+    "PHASE_B_THREAD_MANAGEMENT_ENABLED",
     "GatewayExecutionGate",
     "GatewayOnlyRuntime",
     "GatewayRuntimeMode",
@@ -91,12 +103,18 @@ __all__ = [
     "MeshReconnectCursor",
     "MeshResumeResult",
     "MeshRouteDecision",
+    "MeshSessionMap",
+    "MeshSessionMappingCoordinator",
+    "MeshSessionResolution",
+    "MeshSessionResolver",
     "MeshTransport",
     "MeshTransportError",
     "MeshWorkerIdentity",
     "MeshWorkerRegistration",
     "MeshWorkerStatus",
+    "SessionBinding",
     "content_free_lifecycle_outcomes",
     "enrollment_flag_enabled",
     "resume_flag_enabled",
+    "session_map_flag_enabled",
 ]

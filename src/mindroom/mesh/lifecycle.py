@@ -28,6 +28,7 @@ MeshLifecycleEventType = Literal[
     "worker_deregistered",
     "worker_disconnected",
     "worker_reconnected",
+    "worker_session_bound",
     "message_routed",
     "message_delivered",
     "message_replayed",

@@ -20,6 +20,8 @@ from mindroom.mesh import (
     GatewayRuntimeMode,
     MeshGateway,
     MeshMessage,
+    MeshSessionMap,
+    MeshSessionMappingCoordinator,
     MeshWorkerRegistration,
     content_free_lifecycle_outcomes,
 )
@@ -204,6 +206,55 @@ async def run_demo() -> None:
     print(f"  Messages delivered to Worker A: {len(runtime.transport.get_delivered_messages(WORKER_A_ROOM))}")
     print(f"  Worker B cursor saved: {cursor_b is not None}")
     print(f"  Worker A cursor saved: {cursor_a is not None}")
+    print()
+
+    # ── 11. Verify thread/session mapping (Phase A, local only) ──────────
+    print("▸ Step 11: Verify thread/session mapping (default-OFF, local only)")
+    thread_gw = MeshGateway(
+        transport=runtime.transport,
+        cursor_store=runtime.cursor_store,
+        execution_gate=runtime.gate,
+        gateway_room_id=GATEWAY_ROOM,
+        session_mapping=MeshSessionMappingCoordinator(
+            session_map=MeshSessionMap(),
+            enabled=True,
+        ),
+    )
+    thread_gw.register_worker(
+        MeshWorkerRegistration(
+            worker_id=WORKER_A_ID,
+            agent_name="alpha-agent",
+            room_id=WORKER_A_ROOM,
+            thread_id="$thread-alpha",
+        ),
+    )
+    thread_gw.register_worker(
+        MeshWorkerRegistration(
+            worker_id=WORKER_B_ID,
+            agent_name="beta-agent",
+            room_id=WORKER_B_ROOM,
+            thread_id="$thread-beta",
+        ),
+    )
+    thread_env = thread_gw.route_message(
+        MeshMessage(
+            source_worker_id=WORKER_A_ID,
+            target_worker_id=WORKER_B_ID,
+            content="Alpha → Beta via thread-aware routing.",
+            correlation_id="corr-thread-1",
+        ),
+    )
+    print(f"  Session mapping active: {thread_gw._session_mapping_active}")
+    print(f"  Source thread: {thread_env.route.source_thread_id}")
+    print(f"  Target thread: {thread_env.route.target_thread_id}")
+    print(f"  Target session: {thread_gw.get_outbox_entry(thread_env.outbox_id).target_session_id}")
+    target = thread_gw.delivery_target(thread_gw.get_outbox_entry(thread_env.outbox_id))
+    print(f"  Delivery MessageTarget session: {target.session_id}")
+    print(f"  Delivery resolved thread: {target.resolved_thread_id}")
+    await thread_gw.deliver_pending()
+    print(f"  Messages delivered to Beta room (thread-aware): "
+          f"{len(thread_gw.transport.get_delivered_messages(WORKER_B_ROOM))}")
+    print("  (Phase B real Matrix thread creation/listing is human-gated off)")
     print()
 
     # ── Cleanup ──────────────────────────────────────────────────────────

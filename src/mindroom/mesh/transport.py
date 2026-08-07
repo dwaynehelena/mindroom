@@ -177,10 +177,13 @@ class MatrixMeshTransport(MeshTransport):
     )
 
     async def _deliver_to_room(self, entry: MeshOutboxEntry, message: MeshMessage) -> None:
-        """Deliver one message to the target worker's room.
+        """Deliver one message to the target worker's room/thread.
 
         In production this would call ``send_message_result`` through the
-        Matrix client.  For the demo, we append to an in-memory queue.
+        Matrix client.  For the demo, we append to an in-memory queue keyed by
+        room (and honor ``target_thread_id`` so thread-aware routing is
+        faithfully simulated locally — the same entry/message pair is recorded
+        and ``get_delivered_messages`` reports it under the target room).
         """
         target_queue = self._delivered_messages.setdefault(entry.target_room_id, [])
         target_queue.append((entry, message))
@@ -190,6 +193,7 @@ class MatrixMeshTransport(MeshTransport):
                 "outbox_id": entry.outbox_id,
                 "target_worker_id": entry.target_worker_id,
                 "target_room_id": entry.target_room_id,
+                "target_thread_id": entry.target_thread_id,
             },
         )
 
