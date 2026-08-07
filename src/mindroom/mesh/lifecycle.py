@@ -23,6 +23,7 @@ __all__ = [
 from collections.abc import MutableSequence
 
 MeshLifecycleEventType = Literal[
+    "worker_enrolled",
     "worker_registered",
     "worker_deregistered",
     "worker_disconnected",

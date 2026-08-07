@@ -18,7 +18,17 @@ Built on existing MindRoom primitives:
 
 from __future__ import annotations
 
-from mindroom.mesh.cursor import MeshReconnectCursor, MeshCursorStore
+from mindroom.mesh.cursor import MeshCursorStore, MeshReconnectCursor
+from mindroom.mesh.enrollment import (
+    PHASE_B_HANDSHAKE_ENABLED,
+    MeshEnrollmentAuthority,
+    MeshEnrollmentCoordinator,
+    MeshEnrollmentError,
+    MeshEnrollmentRegistry,
+    MeshEnrollmentResult,
+    MeshWorkerIdentity,
+    enrollment_flag_enabled,
+)
 from mindroom.mesh.gateway import (
     GatewayExecutionGate,
     GatewayOnlyRuntime,
@@ -41,17 +51,23 @@ from mindroom.mesh.models import (
     MeshWorkerStatus,
 )
 from mindroom.mesh.transport import (
+    MatrixMeshTransport,
     MeshTransport,
     MeshTransportError,
-    MatrixMeshTransport,
 )
 
 __all__ = [
+    "PHASE_B_HANDSHAKE_ENABLED",
     "GatewayExecutionGate",
     "GatewayOnlyRuntime",
     "GatewayRuntimeMode",
     "MatrixMeshTransport",
     "MeshCursorStore",
+    "MeshEnrollmentAuthority",
+    "MeshEnrollmentCoordinator",
+    "MeshEnrollmentError",
+    "MeshEnrollmentRegistry",
+    "MeshEnrollmentResult",
     "MeshGateway",
     "MeshGatewayError",
     "MeshLifecycleEvent",
@@ -66,7 +82,9 @@ __all__ = [
     "MeshRouteDecision",
     "MeshTransport",
     "MeshTransportError",
+    "MeshWorkerIdentity",
     "MeshWorkerRegistration",
     "MeshWorkerStatus",
     "content_free_lifecycle_outcomes",
+    "enrollment_flag_enabled",
 ]

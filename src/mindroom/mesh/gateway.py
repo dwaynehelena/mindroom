@@ -158,6 +158,10 @@ class MeshGateway:
     execution_gate: GatewayExecutionGate = field(default_factory=GatewayExecutionGate)
     gateway_room_id: str = ""
     loop_guard: MeshLoopGuard = field(default_factory=MeshLoopGuard.from_env)
+    # Phase A enrollment coordinator.  When ``None`` (default-OFF) the gateway
+    # keeps its exact static registration behavior.  When set and enabled, the
+    # gateway admits/re-admits workers through the coordinator.
+    enrollment: object | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _workers: dict[str, MeshWorkerRegistration] = field(default_factory=dict, repr=False)
     _outbox: dict[str, MeshOutboxEntry] = field(default_factory=dict, repr=False)
@@ -188,7 +192,23 @@ class MeshGateway:
             return list(self._workers.values())
 
     def register_worker(self, registration: MeshWorkerRegistration) -> None:
-        """Register one worker with the gateway."""
+        """Register one worker with the gateway.
+
+        When the optional Phase A enrollment coordinator is present and
+        enabled, admission is routed through it (stable worker identity +
+        enrollment token), emitting ``worker_enrolled`` on first admission and
+        ``worker_registered`` / ``worker_reconnected`` as appropriate.  When
+        enrollment is default-OFF (coordinator is ``None`` or ``enabled`` is
+        False), this behaves exactly as before — static registration.
+        """
+        coordinator = self.enrollment
+        if coordinator is not None and getattr(coordinator, "enabled", False):
+            self._register_worker_enrolled(registration, coordinator)
+            return
+        self._register_worker_static(registration)
+
+    def _register_worker_static(self, registration: MeshWorkerRegistration) -> None:
+        """Legacy static registration path (default-OFF, unchanged behavior)."""
         with self._lock:
             if registration.worker_id in self._workers:
                 msg = f"Worker {registration.worker_id} is already registered"
@@ -201,6 +221,43 @@ class MeshGateway:
             ),
         )
         logger.info("mesh_worker_registered", extra={"worker_id": registration.worker_id})
+
+    def _register_worker_enrolled(
+        self,
+        registration: MeshWorkerRegistration,
+        coordinator: object,
+    ) -> None:
+        """Admit/re-admit a worker through the Phase A enrollment coordinator."""
+        result = coordinator.admit(
+            worker_id=registration.worker_id,
+            agent_name=registration.agent_name,
+            room_id=registration.room_id,
+            capabilities=tuple(registration.metadata.get("capabilities", "mesh.worker").split(","))
+            if registration.metadata.get("capabilities")
+            else ("mesh.worker",),
+            token=registration.auth_token,
+        )
+        if result.status == "rejected":
+            msg = f"Worker {registration.worker_id} enrollment was rejected: {result.reason}"
+            raise MeshGatewayError(msg)
+        with self._lock:
+            known = registration.worker_id in self._workers
+            self._workers[registration.worker_id] = registration
+        if result.status == "enrolled":
+            self._lifecycle_sink.append(
+                MeshLifecycleEvent(event_type="worker_enrolled", worker_id=registration.worker_id),
+            )
+            self._lifecycle_sink.append(
+                MeshLifecycleEvent(event_type="worker_registered", worker_id=registration.worker_id),
+            )
+        elif not known:
+            # Registry reports "reconnected" (same identity file re-admitted)
+            # but the in-memory worker map had no entry yet -> treat as reconnect.
+            self._lifecycle_sink.append(
+                MeshLifecycleEvent(event_type="worker_reconnected", worker_id=registration.worker_id),
+            )
+        # else: already known in-memory -> no duplicate event (idempotent).
+        logger.info("mesh_worker_enrollment_admitted", extra={"worker_id": registration.worker_id, "status": result.status})
 
     def deregister_worker(self, worker_id: str) -> None:
         """Deregister one worker from the gateway."""
