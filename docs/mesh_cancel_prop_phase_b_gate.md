@@ -70,27 +70,77 @@ being flipped.
   registry, the outbox state-machine and the lifecycle sink — never a live
   worker.
 
+## Phase B Unit 4 — /cancel RPC body implemented (gated, DEFERRED for missing surface)
+
+The OpenClaw `/cancel` RPC **request body and transport logic are now fully
+implemented** in `OpenClawMeshCancelTransport` and are verified locally against
+a documented loopback fake gateway — the primary path per the operator's
+instruction.  The real network side effect remains hard-gated behind
+`PHASE_B_CANCEL_RPC_ENABLED` (still `False`).
+
+What Unit 4 adds:
+
+- `build_cancel_body(command)` — constructs the documented request body
+  `{worker_id, correlation_id, cancel_source, outbox_id}`.
+- `parse_ack(command, status, payload)` — maps a 2xx ack / 2xx unacknowledged /
+  non-2xx error into a `MeshCancelAck` or raises `MeshCancelPropagationError`.
+- `request_cancel(command)` — POSTs the body to `{endpoint}/cancel` (injectable
+  transport, default urllib via `asyncio.to_thread`), parses the response, and
+  surfaces error/timeout conditions.  Endpoint policy is HTTPS or loopback HTTP
+  (mirrors the edge-node rule).
+- A documented loopback fake gateway
+  (`scripts/testing/mesh_phaseb_cancel_fake_gateway.py`) exposes the exact
+  `POST /cancel` route so the body + transport + response parsing + error/
+  timeout + registry integration are fully testable locally with **no real
+  OpenClaw gateway**.  New tests: `tests/test_mesh_cancel_rpc.py` (20).
+- A live gate probe (`scripts/testing/mesh_phaseb_cancel_gate_probe.py`) probes
+  the real gateway for a `/cancel` route.
+
+### Gate re-run (Unit 4): **DEFERRED-for-missing-external-surface**
+
+`PHASE_B_CANCEL_RPC_ENABLED` remains `False`.  The real OpenClaw gateway on
+port `18789` was probed and **lacks the `/cancel` route**:
+
+```
+GET  / -> HTTP 200          (SPA catch-all, returns HTML)
+POST /cancel              -> HTTP 404
+POST /api/cancel          -> HTTP 404
+POST /api/worker/cancel   -> HTTP 404
+POST /workers/cancel      -> HTTP 404
+POST /api/v1/cancel       -> HTTP 404
+```
+
+The gateway serves an SPA that swallows `GET` paths but returns `404 Not Found`
+for `POST /cancel` (and every plausible variant), so no live `/cancel` route
+and no live ack smoke are available.  Per the operator's instruction ("flag
+stays off in that case"), the unit is **deferred for the missing external
+surface** and the flag is **not flipped**.
+
 ## Approval checklist before enabling Phase B
 
 Before flipping `PHASE_B_CANCEL_RPC_ENABLED = True` and binding a real
 OpenClaw cancel transport:
 
-1. **Human approval** — an authorized operator (not an agent) explicitly
+1. **A real `/cancel` route exists** — the live OpenClaw gateway must expose
+   `POST /cancel` (verified by `scripts/testing/mesh_phaseb_cancel_gate_probe.py`
+   returning GO), and a live smoke must pass.
+2. **Human approval** — an authorized operator (not an agent) explicitly
    approves issuing real `/cancel` RPC/HTTP calls to the target worker fleet.
-2. **Endpoint policy** — each worker `endpoint` must be HTTPS or loopback HTTP,
+3. **Endpoint policy** — each worker `endpoint` must be HTTPS or loopback HTTP,
    mirroring existing URL validation, and must be a registered mesh worker.
-3. **Token/auth** — issuing a real cancel requires authenticated credentials
+4. **Token/auth** — issuing a real cancel requires authenticated credentials
    (`auth_token`) with permission to cancel the target worker's task; they must
    be provisioned and reviewed, and never logged.
-4. **Correlation parity** — the Phase A `MeshCancelRegistry` must remain the
+5. **Correlation parity** — the Phase A `MeshCancelRegistry` must remain the
    source of truth for `(worker_id, correlation_id) -> outbox_id`; the real
    client only issues the wire cancel and must not fabricate correlation IDs or
    cancel unrelated outbox entries.
-5. **Idempotency** — a worker that has already finished the cancelled task must
+6. **Idempotency** — a worker that has already finished the cancelled task must
    not error spuriously; the Phase A terminal `cancelled` outbox state + saved
    `cancel_source` remain authoritative.
-6. **Rollback** — reverting to `PHASE_B_CANCEL_RPC_ENABLED = False` must fully
+7. **Rollback** — reverting to `PHASE_B_CANCEL_RPC_ENABLED = False` must fully
    restore local-only propagation (fake transport) with no residual network
    calls.
 
-No external call is performed until all of the above are satisfied.
+No external call is performed until the route exists and all of the above are
+satisfied.

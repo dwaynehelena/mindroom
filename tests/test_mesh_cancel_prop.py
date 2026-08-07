@@ -324,7 +324,7 @@ class TestPhaseBCancelRPCGate:
     @pytest.mark.asyncio
     async def test_openclaw_cancel_transport_is_gated(self):
         """OpenClawMeshCancelTransport refuses any cancel until Phase B approved."""
-        transport = OpenClawMeshCancelTransport(endpoint="http://worker/cancel")
+        transport = OpenClawMeshCancelTransport(endpoint="http://127.0.0.1:9")
         with pytest.raises(MeshCancelPropagationError, match="not approved"):
             await transport.request_cancel(
                 MeshCancelCommand(

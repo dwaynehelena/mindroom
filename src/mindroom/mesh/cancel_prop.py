@@ -15,8 +15,10 @@ acknowledgment.  It provides:
 
 - ``MeshCancelTransport`` — the injectable Protocol that issues the cancel.
   Two implementations: ``FakeMeshCancelTransport`` (default, local, no
-  network) and ``OpenClawMeshCancelTransport`` (real HTTP, Phase B — present
-  but hard-gated/unreachable).
+  network) and ``OpenClawMeshCancelTransport`` (real HTTP, Phase B — the
+  ``/cancel`` RPC body + transport logic implemented and unit-tested against a
+  documented loopback fake gateway, but hard-gated behind
+  ``PHASE_B_CANCEL_RPC_ENABLED``).
 
 - ``MeshCancelRegistry`` — in-flight cancel requests keyed by
   ``(worker_id, correlation_id)`` with a TTL.
@@ -26,6 +28,10 @@ transport and the registry + lifecycle side, with **no network calls**.
 Issuing a real ``/cancel`` RPC/HTTP call to a live OpenClaw worker endpoint is
 an external, human-gated Phase B side effect (``PHASE_B_CANCEL_RPC_ENABLED``)
 that is NOT performed here (see ``docs/mesh_cancel_prop_phase_b_gate.md``).
+The OpenClaw ``/cancel`` RPC body and transport logic ARE implemented in
+``OpenClawMeshCancelTransport`` and verified locally against a documented
+loopback fake gateway, but the network call is hard-gated until the real
+OpenClaw gateway exposes a live ``/cancel`` route.
 
 Cancel sources reuse ``mindroom.cancellation`` (``user_stop`` / ``sync_restart``)
 so provenance is consistent with ``delivery_gateway.deliver_cancelled_visible_note``.
@@ -34,10 +40,14 @@ so provenance is consistent with ``delivery_gateway.deliver_cancelled_visible_no
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -50,6 +60,8 @@ if TYPE_CHECKING:
     from mindroom.mesh.models import MeshOutboxEntry
 
 logger = logging.getLogger(__name__)
+
+_CANCEL_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 __all__ = [
     "MESH_CANCEL_PROP_ENV",
@@ -182,25 +194,139 @@ class FakeMeshCancelTransport:
 class OpenClawMeshCancelTransport:
     """Real HTTP cancel transport for a live OpenClaw worker (Phase B, gated).
 
-    Present for the Phase B wiring shape but hard-gated: ``request_cancel``
-    raises ``MeshCancelPropagationError`` unless the module-level
-    ``PHASE_B_CANCEL_RPC_ENABLED`` is flipped after human approval.  Phase A
-    never constructs or invokes this transport by default (the propagator
-    defaults to ``FakeMeshCancelTransport``).
+    Implements the OpenClaw ``/cancel`` RPC: it builds a cancel request body
+    (``worker_id``, ``correlation_id``, ``cancel_source``, ``outbox_id``),
+    POSTs it to ``{endpoint}/cancel`` on the target worker, parses the JSON
+    response into a ``MeshCancelAck``, and surfaces error/timeout conditions as
+    ``MeshCancelPropagationError``.
+
+    The network side effect is hard-gated behind the module-level
+    ``PHASE_B_CANCEL_RPC_ENABLED``: ``request_cancel`` refuses to fire any HTTP
+    call while the gate is closed.  Phase A/the default local path never
+    constructs this transport (the propagator defaults to
+    ``FakeMeshCancelTransport``).  The wire body construction and response
+    parsing are exposed as pure methods (``build_cancel_body`` /
+    ``parse_ack``) so the RPC contract is unit-testable locally against a
+    documented loopback fake OpenClaw gateway without a real gateway or the
+    gate being open.
+
+    ``transport`` is an injectable ``(url, body, auth_token, timeout) ->
+    (status, payload)`` callable (default ``_openclaw_urllib_transport``, a
+    blocking urllib client dispatched via ``asyncio.to_thread``).  Endpoint
+    policy mirrors the edge-node rule: HTTPS or loopback HTTP only.
     """
 
-    def __init__(self, *, endpoint: str, auth_token: str | None = None) -> None:
-        self.endpoint = endpoint
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        auth_token: str | None = None,
+        timeout_seconds: float = 10.0,
+        transport: Callable[[str, dict[str, object], str | None, float], tuple[int, object | None]] | None = None,
+    ) -> None:
+        _validate_cancel_endpoint(endpoint, timeout_seconds)
+        self.endpoint = endpoint.rstrip("/")
         self.auth_token = auth_token
+        self.timeout_seconds = timeout_seconds
+        self._transport = transport if transport is not None else _openclaw_urllib_transport
+
+    def build_cancel_body(self, command: MeshCancelCommand) -> dict[str, str]:
+        """Build the OpenClaw ``/cancel`` RPC request body from one command.
+
+        The body carries the worker identity, the correlation id tying the
+        cancel back to the originating outbox entry, the cancel provenance
+        (``user_stop`` / ``sync_restart``), and the originating ``outbox_id``.
+        """
+        return {
+            "worker_id": command.worker_id,
+            "correlation_id": command.correlation_id,
+            "cancel_source": command.cancel_source,
+            "outbox_id": command.outbox_id,
+        }
+
+    def parse_ack(self, command: MeshCancelCommand, status: int, payload: object | None) -> MeshCancelAck:
+        """Parse a ``/cancel`` HTTP response into a ``MeshCancelAck``.
+
+        A 2xx status with an ``acknowledged`` field (or any 2xx) is treated as
+        acknowledged.  A 2xx body carrying ``acknowledged: false`` (or an
+        explicit ``reason``) is treated as unacknowledged.  A non-2xx status is
+        an error and raises ``MeshCancelPropagationError``.
+        """
+        if not (200 <= status < 300):
+            message = f"OpenClaw /cancel RPC returned HTTP {status}: {payload!r}"
+            raise MeshCancelPropagationError(message)
+        acknowledged = True
+        reason: str | None = None
+        if isinstance(payload, dict):
+            acknowledged = bool(payload.get("acknowledged", True))
+            reason = payload.get("reason")
+        return MeshCancelAck(
+            worker_id=command.worker_id,
+            correlation_id=command.correlation_id,
+            acknowledged=acknowledged,
+            reason=str(reason) if reason is not None else None,
+        )
 
     async def request_cancel(self, command: MeshCancelCommand) -> MeshCancelAck:
         """Issue a real ``/cancel`` RPC — only reachable after Phase B approval."""
         if not PHASE_B_CANCEL_RPC_ENABLED:
             message = "Phase B OpenClaw /cancel RPC is not approved; refusing external side effect"
             raise MeshCancelPropagationError(message)
-        # Unreachable under Phase A.  The real HTTP call to ``self.endpoint``
-        # (``{endpoint}/cancel``) is deferred to Phase B after human review.
-        raise MeshCancelPropagationError("Phase B OpenClaw /cancel RPC is not implemented")
+        url = f"{self.endpoint}/cancel"
+        body = self.build_cancel_body(command)
+        try:
+            status, payload = await asyncio.to_thread(
+                self._transport,
+                url,
+                body,
+                self.auth_token,
+                self.timeout_seconds,
+            )
+        except (OSError, TimeoutError) as exc:
+            message = f"OpenClaw /cancel RPC transport failed for worker {command.worker_id}: {exc}"
+            raise MeshCancelPropagationError(message) from exc
+        return self.parse_ack(command, status, payload)
+
+
+def _validate_cancel_endpoint(endpoint: str, timeout_seconds: float) -> None:
+    """Enforce the HTTPS-or-loopback-HTTP endpoint policy for the /cancel RPC.
+
+    Mirrors the edge-node URL rule so a real cancel call never targets an
+    arbitrary remote HTTP host.
+    """
+    parsed = urllib.parse.urlsplit(endpoint)
+    secure_remote = parsed.scheme == "https"
+    loopback = parsed.scheme == "http" and parsed.hostname in _CANCEL_LOOPBACK_HOSTS
+    if parsed.scheme not in {"http", "https"} or parsed.query or parsed.fragment or timeout_seconds <= 0:
+        message = "OpenClaw /cancel endpoint must be an http(s) URL with a positive timeout"
+        raise MeshCancelPropagationError(message)
+    if not (secure_remote or loopback):
+        message = "OpenClaw /cancel endpoint must use HTTPS or loopback HTTP"
+        raise MeshCancelPropagationError(message)
+
+
+def _openclaw_urllib_transport(
+    url: str,
+    body: dict[str, object],
+    auth_token: str | None,
+    timeout: float,
+) -> tuple[int, object | None]:
+    """Blocking urllib POST used by the OpenClaw cancel transport (thread-dispatched)."""
+    headers = {"Content-Type": "application/json"}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    request = urllib.request.Request(  # noqa: S310 - endpoint validated by transport constructor
+        url,
+        data=json.dumps(body, separators=(",", ":"), sort_keys=True).encode(),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - URL validated by transport
+            payload: object | None = json.load(response) if response.status != 204 else None
+            return response.status, payload
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
 
 
 @dataclass(slots=True)
