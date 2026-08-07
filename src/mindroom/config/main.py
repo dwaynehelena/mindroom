@@ -46,6 +46,7 @@ from mindroom.config.matrix import (
 )
 from mindroom.config.privacy import PrivacyRoutingConfig  # noqa: TC001
 from mindroom.config.memory import MemoryBackend, MemoryConfig, MemorySearchConfig
+from mindroom.config.mesh import MeshConfig  # noqa: TC001
 from mindroom.config.models import (
     CompactionConfig,
     CompactionOverrideConfig,
@@ -61,6 +62,7 @@ from mindroom.config.runtime_overlays import (
     apply_runtime_approved_egress_overlay,
     strip_runtime_approved_egress_overlay_from_dump,
 )
+from mindroom.config.skill_foundry import SkillFoundryConfig  # noqa: TC001
 from mindroom.config.tool_entries import raw_tool_entry_name_and_lazy_flag_fields, raw_tools_entries
 from mindroom.config.voice import VoiceConfig
 from mindroom.config.yaml_includes import ConfigIncludeError, attach_partial_source_files, load_yaml_config_source
@@ -459,6 +461,14 @@ class Config(BaseModel):
     privacy_routing: PrivacyRoutingConfig = Field(
         default_factory=PrivacyRoutingConfig,
         description="Governed privacy routing configuration for model and tool executors",
+    )
+    skill_foundry: SkillFoundryConfig = Field(
+        default_factory=SkillFoundryConfig,
+        description="Skill Foundry active-package installation and live execution configuration",
+    )
+    mesh: MeshConfig = Field(
+        default_factory=MeshConfig,
+        description="Agent Mesh configuration section (gateway-only runtime, loop prevention, etc.)",
     )
 
     @classmethod
