@@ -32,6 +32,7 @@ from mindroom.mesh.lifecycle import (
     MeshLifecycleSink,
     content_free_lifecycle_outcomes,
 )
+from mindroom.mesh.loop_guard import MeshLoopError, MeshLoopGuard, MeshLoopVerdict
 from mindroom.mesh.models import (
     MeshMessage,
     MeshMessageEnvelope,
@@ -56,6 +57,9 @@ __all__ = [
     "MeshLifecycleEvent",
     "MeshLifecycleEventType",
     "MeshLifecycleSink",
+    "MeshLoopError",
+    "MeshLoopGuard",
+    "MeshLoopVerdict",
     "MeshMessage",
     "MeshMessageEnvelope",
     "MeshReconnectCursor",

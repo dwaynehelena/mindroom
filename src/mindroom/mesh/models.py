@@ -47,6 +47,20 @@ class MeshMessage:
     content: str
     correlation_id: str
     created_at: float = field(default_factory=time.time)
+    hop_count: int = 0
+    trace: tuple[str, ...] = ()
+
+    def with_hop(self) -> MeshMessage:
+        """Return a copy advanced one hop with an appended trace entry."""
+        return MeshMessage(
+            source_worker_id=self.source_worker_id,
+            target_worker_id=self.target_worker_id,
+            content=self.content,
+            correlation_id=self.correlation_id,
+            created_at=self.created_at,
+            hop_count=self.hop_count + 1,
+            trace=self.trace + (self.source_worker_id,),
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -31,6 +31,7 @@ from mindroom.mesh.lifecycle import (
     MeshLifecycleSink,
     content_free_lifecycle_outcomes,
 )
+from mindroom.mesh.loop_guard import MeshLoopError, MeshLoopGuard
 from mindroom.mesh.models import (
     MeshDeliveryStatus,
     MeshMessage,
@@ -156,6 +157,7 @@ class MeshGateway:
     cursor_store: MeshCursorStore
     execution_gate: GatewayExecutionGate = field(default_factory=GatewayExecutionGate)
     gateway_room_id: str = ""
+    loop_guard: MeshLoopGuard = field(default_factory=MeshLoopGuard.from_env)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _workers: dict[str, MeshWorkerRegistration] = field(default_factory=dict, repr=False)
     _outbox: dict[str, MeshOutboxEntry] = field(default_factory=dict, repr=False)
@@ -241,6 +243,31 @@ class MeshGateway:
             if target is None:
                 msg = f"Target worker {message.target_worker_id} is not registered"
                 raise MeshGatewayError(msg)
+
+            # Loop prevention: consult the guard BEFORE creating any outbox
+            # entry.  When enabled and the message would exceed hop limits,
+            # expire its TTL, or is a duplicate echo, emit a content-free
+            # drop event and raise — no outbox row is written.
+            verdict = self.loop_guard.check(message)
+            if verdict.dropped:
+                event_type = (
+                    "message_dropped_duplicate"
+                    if verdict.drop_kind == "duplicate"
+                    else "message_dropped_loop"
+                )
+                self._lifecycle_sink.append(
+                    MeshLifecycleEvent(
+                        event_type=event_type,
+                        source_worker_id=message.source_worker_id,
+                        target_worker_id=message.target_worker_id,
+                        correlation_id=message.correlation_id,
+                        failure_reason=verdict.reason,
+                    ),
+                )
+                raise MeshLoopError(
+                    reason=verdict.reason or "loop prevention",
+                    drop_kind=verdict.drop_kind or "loop",
+                )
 
             outbox_id = f"mesh-outbox-{uuid.uuid4().hex[:12]}"
             message_id = f"mesh-msg-{uuid.uuid4().hex[:12]}"
