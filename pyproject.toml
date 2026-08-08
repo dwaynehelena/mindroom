@@ -596,6 +596,7 @@ markers = [
   "requires_matrix: marks tests that require a real Matrix server connection (deselect with '-m \"not requires_matrix\"')",
   "e2e: marks end-to-end tests",
   "slow: marks tests as slow",
+  "fullrepo: runs the complete repository regression suite (subprocess, slow; run separately from the fast stress gate)",
 ]
 
 [tool.coverage.report]
