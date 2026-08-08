@@ -42,6 +42,7 @@ from mindroom.mesh import (  # noqa: E402
     MeshToolStateChunk,
 )
 from mindroom.message_target import MessageTarget  # noqa: E402
+from mindroom.mesh.transport import _message_content_from_source  # noqa: E402
 from mindroom.tool_system.events import ToolTraceEntry  # noqa: E402
 from tests.conftest import bind_runtime_paths, runtime_paths_for, test_runtime_paths  # noqa: E402
 
@@ -267,14 +268,15 @@ async def main() -> int:
             for event in (getattr(timeline, "events", None) or []):
                 if event.__class__.__name__ != "RoomMessageText":
                     continue
-                source = getattr(event, "source", None)
-                if not isinstance(source, dict):
-                    continue
-                content = source.get("content") or {}
+                content = _message_content_from_source(getattr(event, "source", None))
                 bodies.append(content.get("body", ""))
                 rel = content.get("m.relates_to")
                 if isinstance(rel, dict):
                     thread_rels.append(rel)
+        # Tool-state posts carry a visible 🔧 tool marker line (never the raw
+        # ROOT message).  Count only those to avoid the root event trivially
+        # satisfying the "event reached the room" check.
+        tool_state_bodies = [b for b in bodies if "🔧" in b]
         for body in bodies:
             log(f"    [sync body] {body!r}")
         for rel in thread_rels:
@@ -288,24 +290,23 @@ async def main() -> int:
         for event in getattr(room_messages, "chunk", []) or []:
             if event.__class__.__name__ != "RoomMessageText":
                 continue
-            source = getattr(event, "source", None)
-            if not isinstance(source, dict):
-                continue
-            content = source.get("content") or {}
+            content = _message_content_from_source(getattr(event, "source", None))
             all_bodies.append(content.get("body", ""))
             rel = content.get("m.relates_to")
             if isinstance(rel, dict):
                 all_rels.append(rel)
+        tool_state_all = [b for b in all_bodies if "🔧" in b]
         for body in all_bodies:
             log(f"    [room_messages body] {body!r}")
         for rel in all_rels:
             log(f"    [room_messages thread rel] {rel!r}")
         log(
             f"{PASS} sync bodies={len(bodies)} / messages bodies={len(all_bodies)}; "
+            f"tool-state bodies: sync={len(tool_state_bodies)} messages={len(tool_state_all)}; "
             f"thread_rels(sync)={len(thread_rels)} thread_rels(messages)={len(all_rels)}",
         )
 
-        if not bodies:
+        if not tool_state_bodies and not tool_state_all:
             log(f"{FAIL} NO-GO: no tool-state event reached the live room")
             return 1
 
@@ -316,6 +317,9 @@ async def main() -> int:
         )
         if not deliver_calls:
             log(f"{FAIL} NO-GO: deliver_stream did not return a terminal outcome")
+            return 1
+        if not any(o.terminal_status == "completed" for o in deliver_calls):
+            log(f"{FAIL} NO-GO: no terminal 'completed' streaming outcome (false-pass guard)")
             return 1
 
         log("-" * 72)
