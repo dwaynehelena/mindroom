@@ -11,13 +11,13 @@ from mindroom.ops_autopilot.approval.gate import ApprovalGate, ApprovalOutcome, 
 
 
 @pytest.mark.asyncio
-async def test_gate_auto_approves_when_no_live_store() -> None:
-    # No module-level approval manager wired -> auto-approve fallback.
+async def test_gate_fails_closed_when_no_live_store() -> None:
+    # No module-level approval manager wired -> gate must NOT auto-approve; it denies.
     with patch("mindroom.ops_autopilot.approval.gate.get_approval_store", return_value=None):
         gate = ApprovalGate()
         outcome = await gate.gate("brief")
-    assert outcome.approved is True
-    assert outcome.status == "auto_approve"
+    assert outcome.approved is False
+    assert outcome.status == "denied"
     assert outcome.live is False
 
 
@@ -94,8 +94,9 @@ def test_request_approval_sync_wrapper() -> None:
         patch("mindroom.ops_autopilot.approval.gate.get_approval_store", return_value=None),
         patch(
             "mindroom.ops_autopilot.approval.gate.asyncio.run",
-            return_value=ApprovalOutcome(True, "auto_approve"),
+            return_value=ApprovalOutcome(False, "denied"),
         ),
     ):
         outcome = request_approval("brief")
-    assert outcome.approved is True
+    assert outcome.approved is False
+    assert outcome.status == "denied"

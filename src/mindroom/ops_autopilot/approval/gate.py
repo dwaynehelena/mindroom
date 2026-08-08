@@ -52,11 +52,13 @@ class ApprovalGate:
         arguments = {"brief_length": len(brief), "target": "telegram_dm"}
 
         if store is None:
-            # No live runtime store wired for a standalone test pipeline run.
+            # Fail closed: a missing live approval store must NEVER silently
+            # auto-approve a delivery. The brief's suggested action is gated and
+            # stays blocked until a real Approve/Deny can be resolved in Matrix.
             return ApprovalOutcome(
-                approved=True,
-                status="auto_approve",
-                reason="No live approval runtime; auto-approved for test delivery.",
+                approved=False,
+                status="denied",
+                reason="No live approval runtime; refusing to auto-approve delivery.",
             )
 
         decision = await store.request_approval(
