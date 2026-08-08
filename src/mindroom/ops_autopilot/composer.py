@@ -38,9 +38,17 @@ def _scheduler_block(result: CollectResult) -> list[str]:
     return [line]
 
 
-def compose_brief(results: list[CollectResult]) -> str:
-    """Render a bounded brief from ordered collect results."""
-    timestamp = datetime.now(UTC).astimezone().isoformat(timespec="seconds")
+def compose_brief(results: list[CollectResult], *, generated_at: datetime | None = None) -> str:
+    """Render a bounded brief from ordered collect results.
+
+    ``generated_at`` may be injected for deterministic output in tests/replay;
+    otherwise it defaults to the current UTC wall clock (justified by the
+    collector timestamps in each ``CollectResult`` so the brief's own generation
+    time is always comparable to its sources).
+    """
+    if generated_at is None:
+        generated_at = datetime.now(UTC)
+    timestamp = generated_at.astimezone().isoformat(timespec="seconds")
     lines: list[str] = [
         "🧭 Ops Autopilot test brief",
         f"Generated {timestamp}",

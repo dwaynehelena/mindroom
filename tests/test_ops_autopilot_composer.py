@@ -75,3 +75,14 @@ def test_compose_brief_git_non_summary_unavailable() -> None:
 def test_compose_brief_includes_telegram_dm_footer() -> None:
     body = compose_brief([_git_ok()])
     assert "8411753427" in body
+
+
+def test_compose_brief_deterministic_generated_at() -> None:
+    from datetime import UTC, datetime
+
+    fixed = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
+    a = compose_brief([_git_ok()], generated_at=fixed)
+    b = compose_brief([_git_ok()], generated_at=fixed)
+    assert a == b  # deterministic for the same generation instant
+    expected = f"Generated {fixed.astimezone().isoformat(timespec='seconds')}"
+    assert expected in a
