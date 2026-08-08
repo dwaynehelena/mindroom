@@ -11,7 +11,7 @@ Pipeline flow:
 
 Modules
 -------
-- ``collectors`` : signal sources (git via gh CLI, scheduler, base contract)
+- ``collectors`` : signal sources (git via gh CLI, scheduler, deferred mail/calendar, base contract)
 - ``composer``   : turns collected signals into a bounded human-readable brief
 - ``approval``   : ARIP-style approval gate reusing approval_manager
 - ``delivery``   : Telegram delivery through the Matrix portal bridge

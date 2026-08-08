@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from mindroom.ops_autopilot.collectors.calendar import CalendarCollector
 from mindroom.ops_autopilot.collectors.mail import MailCollector
+from mindroom.ops_autopilot.collectors.registry import build_default_registry
+from mindroom.ops_autopilot.composer import compose_brief
 
 
 def test_mail_collector_reports_deferred_with_evidence() -> None:
@@ -34,3 +36,14 @@ def test_calendar_collector_data_is_deterministic() -> None:
     a = CalendarCollector().collect().data
     b = CalendarCollector().collect().data
     assert a == b
+
+
+def test_default_registry_surfaces_deferred_mail_and_calendar_in_brief() -> None:
+    """The full default pipeline (registry -> composer) surfaces both deferred sources."""
+    results = build_default_registry().run_all()
+    sources = [r.source for r in results]
+    assert "mail" in sources
+    assert "calendar" in sources
+    body = compose_brief(results)
+    assert "• mail: deferred — no gmail credentials found" in body
+    assert "• calendar: deferred — no google_calendar credentials found" in body

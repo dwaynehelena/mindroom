@@ -45,6 +45,16 @@ def test_default_registry_contains_git_and_scheduler() -> None:
     assert "scheduler" in names
 
 
+def test_default_registry_contains_deferred_mail_and_calendar() -> None:
+    reg = build_default_registry()
+    names = [c.name for c in reg._collectors]
+    assert "mail" in names
+    assert "calendar" in names
+    # Deferred sources are wired after the live git/scheduler signals.
+    assert names.index("mail") > names.index("scheduler")
+    assert names.index("calendar") > names.index("mail")
+
+
 def test_registry_keeps_fail_soft_results_in_order() -> None:
     reg = CollectorRegistry(
         [

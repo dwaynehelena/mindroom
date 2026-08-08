@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from mindroom.ops_autopilot.collectors.base import BaseCollector, CollectResult
+from mindroom.ops_autopilot.collectors.calendar import CalendarCollector
 from mindroom.ops_autopilot.collectors.git import GitCollector
+from mindroom.ops_autopilot.collectors.mail import MailCollector
 from mindroom.ops_autopilot.collectors.scheduler import SchedulerCollector
 
 
@@ -23,4 +25,6 @@ class CollectorRegistry:
 
 def build_default_registry() -> CollectorRegistry:
     """Build the standard collector set for the autopilot pipeline."""
-    return CollectorRegistry([GitCollector(), SchedulerCollector()])
+    return CollectorRegistry(
+        [GitCollector(), SchedulerCollector(), MailCollector(), CalendarCollector()]
+    )

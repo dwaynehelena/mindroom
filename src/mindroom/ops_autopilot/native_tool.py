@@ -14,7 +14,9 @@ from __future__ import annotations
 from agno.tools import Toolkit
 
 from mindroom.approval_manager import get_approval_store
+from mindroom.ops_autopilot.collectors.calendar import CalendarCollector
 from mindroom.ops_autopilot.collectors.git import GitCollector
+from mindroom.ops_autopilot.collectors.mail import MailCollector
 from mindroom.ops_autopilot.collectors.registry import CollectorRegistry
 from mindroom.ops_autopilot.collectors.scheduler import SchedulerCollector
 from mindroom.ops_autopilot.orchestrator import OpsAutopilotOrchestrator
@@ -58,6 +60,8 @@ class OpsAutopilotNativeTools(Toolkit):
             [
                 GitCollector(),
                 SchedulerCollector(client=context.client, room_id=context.room_id),
+                MailCollector(),
+                CalendarCollector(),
             ]
         )
         orchestrator = OpsAutopilotOrchestrator(registry=registry, room_id=context.room_id)

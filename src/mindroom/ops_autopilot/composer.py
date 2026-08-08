@@ -38,6 +38,18 @@ def _scheduler_block(result: CollectResult) -> list[str]:
     return [line]
 
 
+def _deferred_block(result: CollectResult) -> list[str]:
+    """Render a deferred mail/calendar source with its evidence."""
+    if not result.ok or not isinstance(result.data, dict):
+        return [f"• {result.source}: unavailable"]
+    data = result.data
+    reason = data.get("reason")
+    line = f"• {result.source}: deferred"
+    if reason:
+        line += f" — {reason}"
+    return [line]
+
+
 def compose_brief(results: list[CollectResult], *, generated_at: datetime | None = None) -> str:
     """Render a bounded brief from ordered collect results.
 
@@ -59,6 +71,8 @@ def compose_brief(results: list[CollectResult], *, generated_at: datetime | None
             lines.extend(_git_block(result))
         elif result.source == "scheduler":
             lines.extend(_scheduler_block(result))
+        elif result.source in ("mail", "calendar"):
+            lines.extend(_deferred_block(result))
         else:
             lines.append(result.render())
     lines.extend(

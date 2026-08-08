@@ -49,6 +49,37 @@ def test_compose_brief_unknown_source_uses_render() -> None:
     assert "• custom: OK" in body
 
 
+def test_compose_brief_renders_deferred_mail_with_evidence() -> None:
+    body = compose_brief(
+        [
+            CollectResult(
+                "mail",
+                True,
+                data={"deferred": True, "reason": "no gmail credentials found"},
+            ),
+        ],
+    )
+    assert "• mail: deferred — no gmail credentials found" in body
+
+
+def test_compose_brief_renders_deferred_calendar_with_evidence() -> None:
+    body = compose_brief(
+        [
+            CollectResult(
+                "calendar",
+                True,
+                data={"deferred": True, "reason": "no google_calendar credentials found"},
+            ),
+        ],
+    )
+    assert "• calendar: deferred — no google_calendar credentials found" in body
+
+
+def test_compose_brief_deferred_source_unavailable_when_not_dict() -> None:
+    body = compose_brief([CollectResult("mail", True, data="weird")])
+    assert "• mail: unavailable" in body
+
+
 def test_compose_brief_body_within_byte_limit() -> None:
     results = [_git_ok(recent_commits=[f"abc{i} msg" for i in range(5)]) for _ in range(20)]
     body = compose_brief(results)
