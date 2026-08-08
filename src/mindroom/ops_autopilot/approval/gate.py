@@ -1,10 +1,9 @@
 """ARIP approval gate reusing the canonical ``approval_manager`` runtime.
 
-The gate attempts to route through the live ``request_approval`` from
+The gate routes through the live ``request_approval`` from
 ``mindroom.approval_manager`` (the module-level approval store). When no live
-store is wired (standalone/test pipeline run), it falls back to an explicit
-auto-approve so the end-to-end test brief can still be delivered, and records
-that fact on the outcome.
+store is wired (standalone/test pipeline run), it fails closed and refuses to
+deliver, recording that fact on the outcome.
 """
 
 from __future__ import annotations
