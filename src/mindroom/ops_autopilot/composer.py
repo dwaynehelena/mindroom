@@ -39,8 +39,10 @@ def _scheduler_block(result: CollectResult) -> list[str]:
 
 
 def _deferred_block(result: CollectResult) -> list[str]:
-    """Render a deferred mail/calendar source with its evidence."""
-    if not result.ok or not isinstance(result.data, dict):
+    """Render a fail-soft mail/calendar source with its evidence."""
+    if not result.ok:
+        return [f"• {result.source}: unavailable — {result.error or 'collect failed'}"]
+    if not isinstance(result.data, dict):
         return [f"• {result.source}: unavailable"]
     data = result.data
     reason = data.get("reason")
