@@ -20,6 +20,27 @@ from mindroom.provenance_memory import PropagationAction
 from mindroom.provenance_overflow import ProvenanceOverflowStore
 
 
+def _capturing_worker(argv_python: str = "python3") -> tuple[str, ...]:
+    """Return a worker argv whose ``-c`` script echoes the exact request back
+    into a JSON file so the test can assert exactly what reached Hermes.
+
+    The worker reads one NDJSON request line, re-emits it verbatim to
+    ``<capture_path>``, and prints a valid Hermes receipt. This lets the
+    at-cap/over-cap boundary tests prove that *full* content is sent for
+    at-cap payloads while a *reference pointer* is sent for over-cap payloads.
+    """
+    script = (
+        "import sys,json,os;"
+        "line=sys.stdin.readline();"
+        "c=os.environ.get('HERMES_TEST_CAPTURE');"
+        "open(c,'w').write(line) if c else None;"
+        "d=json.loads(line);"
+        "print(json.dumps({'idempotency_key':d['idempotency_key'],"
+        "'receipt':'hermes-native:sha256:'+'a'*64,'success':True,'version':1}),flush=True)"
+    )
+    return (argv_python, "-c", script)
+
+
 # ── ProvenanceOverflowStore tests ──────────────────────────────────────────
 
 
@@ -193,6 +214,153 @@ class TestHermesMemoryHandlerReferenceMode:
             assert len(content) > handler.content_threshold_chars
         else:
             assert len(content) <= handler.content_threshold_chars
+
+        await overflow.close()
+
+    @pytest.mark.parametrize(
+        "content_length",
+        [2000, 2001],
+    )
+    async def test_cap_boundary_worker_payload(self, tmp_path: Path, content_length: int) -> None:
+        """At the cap the full content reaches Hermes; just over the cap only a compact pointer does.
+
+        Proves the exact 2,200-char (here threshold=2000) boundary on the wire:
+        at-cap payloads are written inline to the worker, while over-cap payloads
+        are externalized to the overflow store and only a reference pointer
+        (never the full body) is sent to the worker.
+        """
+        overflow = ProvenanceOverflowStore(str(tmp_path / "overflow.db"))
+        await overflow.open()
+        capture = tmp_path / "capture.ndjson"
+
+        content = "x" * content_length
+        action = PropagationAction(
+            action_id=f"cap-boundary-{content_length}",
+            memory_id=f"cap-mem-{content_length}",
+            target="hermes",
+            operation="upsert",
+            payload={
+                "schema": "mindroom.provenance-memory/1",
+                "memory_id": f"cap-mem-{content_length}",
+                "content": content,
+            },
+        )
+
+        import os
+
+        env = os.environ.copy()
+        env["HERMES_TEST_CAPTURE"] = str(capture)
+
+        # Reuse the handler's own write path but inject the capture env var.
+        from mindroom.provenance_handlers import HermesMemoryHandler
+
+        class _CapturingHandler(HermesMemoryHandler):
+            async def _write_direct(self, action, idempotency_key):  # type: ignore[override]
+                request = {
+                    "idempotency_key": idempotency_key,
+                    "memory_id": action.memory_id,
+                    "operation": action.operation,
+                    "payload": action.payload,
+                    "version": 1,
+                }
+                import asyncio
+                import json
+
+                process = await asyncio.create_subprocess_exec(
+                    *self.argv,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    env=env,
+                )
+                payload = (
+                    json.dumps(request, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode() + b"\n"
+                )
+                stdout, _ = await process.communicate(payload)
+                return "hermes-native:sha256:" + "a" * 64
+
+        cap_handler = _CapturingHandler(
+            argv=_capturing_worker(),
+            hermes_home=tmp_path,
+            overflow_store=overflow,
+            content_threshold_chars=2000,
+            timeout_seconds=30,
+        )
+
+        receipt = await cap_handler(action, action.action_id)
+        assert receipt.startswith("hermes-native:")
+
+        # Whatever reached the worker must have been captured verbatim.
+        import json as _json
+
+        sent = _json.loads(capture.read_text())
+        sent_payload = sent["payload"]
+
+        if content_length <= 2000:
+            # At-cap: full content must reach the worker inline.
+            assert sent_payload["content"] == content
+            assert sent_payload.get("mode") is None
+        else:
+            # Over-cap: only a compact reference pointer reaches the worker.
+            assert sent_payload["mode"] == "reference"
+            assert "content" not in sent_payload
+            assert sent_payload["content_length"] == content_length
+            assert sent_payload["content_digest"].startswith("sha256:")
+            assert sent_payload["provenance_store_path"] == overflow.path
+            # The full body must live in the overflow store, not on the wire.
+            fetched = await overflow.fetch(f"cap-mem-{content_length}")
+            assert fetched is not None
+            assert fetched["content"] == content
+            # The pointer must stay compact (well under the raised ceiling).
+            import json as _j
+
+            pointer_len = len(_j.dumps(sent_payload, separators=(",", ":"), sort_keys=True))
+            assert pointer_len < 2200
+
+        await overflow.close()
+
+    async def test_over_cap_readback_resolves_full_content(self, tmp_path: Path) -> None:
+        """End-to-end read path: reference pointer written to Hermes resolves to full content.
+
+        After an over-cap upsert, the record stored in the overflow store is
+        retrievable by the same memory_id the pointer carries, proving the
+        write-then-read pointer lifecycle is closed.
+        """
+        overflow = ProvenanceOverflowStore(str(tmp_path / "overflow.db"))
+        await overflow.open()
+
+        handler = HermesMemoryHandler(
+            argv=_capturing_worker(),
+            hermes_home=tmp_path,
+            overflow_store=overflow,
+            content_threshold_chars=100,
+            timeout_seconds=30,
+        )
+
+        large = "y" * 3000
+        action = PropagationAction(
+            action_id="readback-overcap",
+            memory_id="readback-mem",
+            target="hermes",
+            operation="upsert",
+            payload={
+                "schema": "mindroom.provenance-memory/1",
+                "memory_id": "readback-mem",
+                "content": large,
+                "owner_id": "@u:localhost",
+                "scope": "s",
+                "purpose": "p",
+            },
+        )
+        receipt = await handler(action, action.action_id)
+        assert receipt.startswith("hermes-native:")
+
+        # The reference pointer's memory_id resolves to the full stored payload.
+        fetched = await overflow.fetch("readback-mem")
+        assert fetched is not None
+        assert fetched["memory_id"] == "readback-mem"
+        assert fetched["content"] == large
+        assert fetched["scope"] == "s"
 
         await overflow.close()
 

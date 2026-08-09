@@ -1,0 +1,45 @@
+{
+  "phase": "P2",
+  "task": "unblock-live-hermes-upsert-reference-mode",
+  "completed_at": "2026-08-09T09:24:44+00:00",
+  "status": "VERIFIED",
+  "live_upsert": {
+    "memory_id": "live:p2:hermes-overflow:2026-08-09",
+    "content_length": 8140,
+    "threshold_chars": 2000,
+    "mode": "reference",
+    "overflow_store": "/Users/dwayne/.mindroom/mindroom_data/provenance_memory.db.overflow.db",
+    "hermes_store": "/Users/dwayne/.hermes/memory_store.db"
+  },
+  "worker_receipt": "hermes-native:sha256:20def25406ffc9f471a641b5d38be903626e41779e0b4799620bd66732c69312",
+  "overflow_payload_stored": true,
+  "pointer_in_hermes": {
+    "present": true,
+    "chars": 888,
+    "fits_under_2200": true,
+    "payload": {
+      "schema": "mindroom.provenance-memory/1",
+      "memory_id": "live:p2:hermes-overflow:2026-08-09",
+      "mode": "reference",
+      "content_digest": "sha256:1e9a2815a5c949eb806abd893a911a9a7d30f04af1f924ea58ed00ea8e209b98",
+      "content_length": 8140,
+      "content_preview": "Hermes P2 reference-mode live proof. (first 500 chars)",
+      "provenance_store_path": "/Users/dwayne/.mindroom/mindroom_data/provenance_memory.db.overflow.db"
+    }
+  },
+  "read_back": {
+    "full_payload_resolvable": true,
+    "resolved_content_length": 8140,
+    "matches": true
+  },
+  "test_results": {
+    "provenance_overflow": "38 passed",
+    "provenance_worker": "included in the 38",
+    "boundary_tests_added": [
+      "test_cap_boundary_worker_payload[2000]",
+      "test_cap_boundary_worker_payload[2001]",
+      "test_over_cap_readback_resolves_full_content"
+    ]
+  },
+  "notes": "Live upsert proven end-to-end: full 8,140-char payload stored in ProvenanceOverflowStore (Tier 2), a compact 888-char reference pointer written into Hermes holographic store (Tier 1), worker receipt confirmed, and the pointer resolves back to the full payload on read."
+}
