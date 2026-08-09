@@ -1,0 +1,6 @@
+restricted=local-private executed=true
+public=cloud-public executed=true
+tool=isolated-transform network=none executed=true
+restricted-cloud=denied-before-execution
+selected-failure=failure-recorded fallback=false
+ledger=closed cleanup=verified

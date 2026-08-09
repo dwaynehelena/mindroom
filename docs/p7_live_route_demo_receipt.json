@@ -1,0 +1,110 @@
+{
+  "schema": "mindroom.p7-governed-privacy-routing-execution/1",
+  "generated_at": "2026-08-09T00:00:00Z",
+  "phase": "P7 EXECUTION",
+  "scope": "governed privacy-aware model and tool routing over the real site system",
+  "executors_instantiated": {
+    "ollama-local": {
+      "class": "OpenAICompatibleModelExecutor",
+      "origin": "http://127.0.0.1:11434/v1",
+      "model": "llama3.2:3b",
+      "transport": "loopback HTTP",
+      "live_verified": true
+    },
+    "hermes-cloud": {
+      "class": "hermes CLI (cloud model adapter)",
+      "executable": "/Users/dwayne/.local/bin/hermes",
+      "transport": "Hermes cloud",
+      "live_verified": true
+    },
+    "docker-transform": {
+      "class": "DockerJsonToolExecutor",
+      "image": "python@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df",
+      "network": "none",
+      "root": "read-only",
+      "privileges": "cap-drop=ALL, no-new-privileges, user=65534:65534",
+      "live_verified": true
+    }
+  },
+  "route_mapping": {
+    "local-private": {
+      "kind": "model",
+      "executor": "ollama-local",
+      "location": "local",
+      "residency": "AU",
+      "max_sensitivity": "restricted",
+      "cost_microunits": 5,
+      "isolated": false
+    },
+    "cloud-public": {
+      "kind": "model",
+      "executor": "hermes-cloud",
+      "location": "cloud",
+      "residency": "US",
+      "max_sensitivity": "confidential",
+      "cost_microunits": 1,
+      "isolated": false
+    },
+    "isolated-transform": {
+      "kind": "tool",
+      "executor": "docker-transform",
+      "location": "local",
+      "residency": "AU",
+      "max_sensitivity": "restricted",
+      "cost_microunits": 1,
+      "isolated": true
+    }
+  },
+  "live_demo_results": [
+    {
+      "request_id": "live-local-restricted",
+      "route_id": "local-private",
+      "executor": "ollama-local",
+      "policy": "sensitivity=restricted, capability=reasoning, residency={AU,US}",
+      "request": {"prompt": "Reply with exactly PRIVACY_LOCAL_OK"},
+      "response_evidence": "PRIVACY_LOCAL_OK present in model output",
+      "status": "completed"
+    },
+    {
+      "request_id": "live-cloud-public",
+      "route_id": "cloud-public",
+      "executor": "hermes-cloud",
+      "policy": "sensitivity=public, capability=cloud-reasoning, residency={US}",
+      "request": {"prompt": "Reply with exactly PRIVACY_CLOUD_OK"},
+      "response_evidence": "PRIVACY_CLOUD_OK present in model output",
+      "status": "completed"
+    },
+    {
+      "request_id": "live-isolated-tool",
+      "route_id": "isolated-transform",
+      "executor": "docker-transform",
+      "policy": "sensitivity=restricted, capability=transform, residency={AU}, isolation=true",
+      "request": {"arguments": {"values": [3, 1, 2]}},
+      "response_evidence": "{\"normalized\": [1, 2, 3]}",
+      "status": "completed",
+      "network": "none"
+    },
+    {
+      "request_id": "denied-restricted-cloud",
+      "route_id": null,
+      "executor": null,
+      "policy": "sensitivity=restricted, capability=cloud-reasoning, residency={US}",
+      "request": {"prompt": "must not execute"},
+      "response_evidence": "denied before execution (RoutingError)",
+      "status": "denied"
+    },
+    {
+      "request_id": "selected-cloud-failure",
+      "route_id": "cloud-public",
+      "executor": "hermes-cloud",
+      "policy": "sensitivity=public, capability=reasoning, residency={AU,US}",
+      "request": {"prompt": "must not fall back"},
+      "response_evidence": "durably failed, no local fallback (local_fallback_calls=0)",
+      "status": "failed-recorded"
+    }
+  ],
+  "test_result": {
+    "unit_tests": "5 privacy modules passed (composition, dispatch, executors, handlers, router)",
+    "live_demo": "all 5 live scenarios passed, exit=0"
+  }
+}
