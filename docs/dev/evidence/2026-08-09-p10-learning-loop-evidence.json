@@ -1,0 +1,65 @@
+{
+  "canary_publication_receipt": {
+    "hermes": {
+      "receipt": "sha256:a1ecd86fa52ff1a0829bf61652c2a447327004cd4cfed7d39eb541a0d5fd7ace",
+      "status": "canary"
+    },
+    "openclaw": {
+      "receipt": "sha256:ea4aa726d90b9aa3abb7330dcb26ae8172b53fa5fef50089c65bbe1ffb37289a",
+      "status": "canary"
+    }
+  },
+  "capture_receipt": {
+    "artifact_digest": "10284a6ead06c633c64ef969681eb1434ebadc589342e521f3ceb4cb11da5626",
+    "proposal_id": "flight:5806ca6da7584423dfd5b77b1656623da1b56e363f1598d843244b5d7e4ebbf7",
+    "recorder_event_id": 1,
+    "recorder_record_hash": "1c0115147165c497972ab141576c2faad0a8658182d8b6372e501b3fb102d986",
+    "source_run_id": "p10-learning-loop-run",
+    "stage": "proposed"
+  },
+  "cleanup": "rolled_back",
+  "completed_at": "2026-08-09T09:12:17.882771+00:00",
+  "evaluation": {
+    "passed": 1,
+    "suite": "p10-live",
+    "tests": 1
+  },
+  "loop": "VERIFIED",
+  "phase": "P10",
+  "review_delivery_receipt": {
+    "approval_id": "42ca5aba4a52480aa8e44b4e346f7538",
+    "approved_by": "@dwayne:localhost",
+    "card_event_id": "$Ti_xnQ0W6sozvEnoh9EoMMnFgem9knKAxXQyMWG89Yc",
+    "delivered_by": "mindroom_router@localhost",
+    "reason": "P10 end-to-end governed publication approved",
+    "room_id": "!FqoGpSIkzhJDGyKDVa:localhost",
+    "tool": "mindroom.learning.promote"
+  },
+  "sandbox": {
+    "image": "python@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df",
+    "isolated": true,
+    "passed": true,
+    "runner": "docker"
+  },
+  "skill_id": "mindroom-learning-p10-evidence",
+  "stable_discovery": {
+    "hermes": true,
+    "openclaw": true
+  },
+  "stable_promotion_confirmation": {
+    "receipts": {
+      "hermes": {
+        "receipt": "{\"artifact_digest\":\"10284a6ead06c633c64ef969681eb1434ebadc589342e521f3ceb4cb11da5626\",\"native_receipt\":\"sha256:9cef083d53651cc587d92d5f5a49db388e9ff3ae7be70cf88e311e0065a5d15f\",\"proposal_id\":\"flight:5806ca6da7584423dfd5b77b1656623da1b56e363f1598d843244b5d7e4ebbf7\",\"runtime\":\"hermes\",\"version\":1}",
+        "status": "stable"
+      },
+      "openclaw": {
+        "receipt": "{\"artifact_digest\":\"10284a6ead06c633c64ef969681eb1434ebadc589342e521f3ceb4cb11da5626\",\"native_receipt\":\"sha256:6e5280521d7fe7cf4df767c8d061035f7346e7d4ec945eb4f6986e5be5c692fd\",\"proposal_id\":\"flight:5806ca6da7584423dfd5b77b1656623da1b56e363f1598d843244b5d7e4ebbf7\",\"runtime\":\"openclaw\",\"version\":1}",
+        "status": "stable"
+      }
+    },
+    "stage": "stable"
+  },
+  "started_at": "2026-08-09T09:12:00.922172+00:00",
+  "title": "Automatic recorder capture -> live review -> canary -> stable publication",
+  "version": "1"
+}
