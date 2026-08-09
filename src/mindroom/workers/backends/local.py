@@ -149,6 +149,44 @@ def ensure_local_worker_state_locked(paths: LocalWorkerStatePaths) -> None:
         _ensure_local_worker_state(paths)
 
 
+_SKILL_MOUNTS_DIRNAME = "skills"
+
+
+def _project_skill_mounts(paths: LocalWorkerStatePaths, skill_mounts: dict[str, Path]) -> None:
+    """Make host-side skill directories reachable inside a local worker sandbox.
+
+    The local worker shares the host filesystem, so we materialize each
+    ``skill_name -> local_path`` mapping as a symlink under the worker's
+    ``workspace/skills/<name>``.  The sandbox runner can then read the skill's
+    ``scripts/`` and ``references/`` directories during live execution without
+    copying the artifacts per request.
+
+    Only real, absolute, non-symlink source directories are mounted; anything
+    else is skipped so a malformed mount never breaks worker startup.
+    """
+    mounts_dir = paths.workspace / _SKILL_MOUNTS_DIRNAME
+    mounts_dir.mkdir(parents=True, exist_ok=True)
+
+    for skill_name, source in skill_mounts.items():
+        if not isinstance(skill_name, str) or not skill_name or "\x00" in skill_name:
+            continue
+        resolved = source.expanduser().resolve()
+        if not resolved.is_dir() or resolved.is_symlink() or resolved == mounts_dir.resolve():
+            continue
+        link = mounts_dir / skill_name
+        try:
+            if link.is_symlink():
+                if link.resolve() == resolved:
+                    continue
+                link.unlink()
+            elif link.exists():
+                # A real directory already lives here; leave it in place.
+                continue
+            link.symlink_to(resolved, target_is_directory=True)
+        except OSError:
+            continue
+
+
 def _shared_worker_initialization_lock(paths: LocalWorkerStatePaths) -> threading.Lock:
     lock_key = str(paths.root)
     with _SHARED_INITIALIZATION_LOCK:
@@ -210,6 +248,8 @@ class _LocalWorkerBackend:
 
             try:
                 self._ensure_worker_state(paths)
+                if spec.skill_mounts:
+                    _project_skill_mounts(paths, spec.skill_mounts)
             except Exception as exc:
                 failure_reason = f"Failed to initialize worker '{spec.worker_key}': {exc}"
                 with self._lock:

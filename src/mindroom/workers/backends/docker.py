@@ -174,6 +174,25 @@ def _host_config_contents_hash(host_config_path: Path | None) -> str:
     return source_files_fingerprint(host_config_path, source_digests)
 
 
+def _skill_mount_specs(skill_mounts: dict[str, Path] | None) -> list[tuple[str, Path]]:
+    """Return validated skill-name → host-path pairs for container mounts.
+
+    Only real, absolute, non-symlink source directories are accepted so a
+    malformed mount never breaks worker startup.
+    """
+    if not skill_mounts:
+        return []
+    specs: list[tuple[str, Path]] = []
+    for skill_name, source in skill_mounts.items():
+        if not isinstance(skill_name, str) or not skill_name or "\x00" in skill_name:
+            continue
+        resolved = source.expanduser().resolve()
+        if not resolved.is_dir() or resolved.is_symlink():
+            continue
+        specs.append((skill_name, resolved))
+    return specs
+
+
 def _docker_image_identity_state(
     image: str,
     *,
@@ -455,6 +474,7 @@ class DockerWorkerBackend:
                     metadata,
                     paths,
                     private_agent_names=spec.private_agent_names,
+                    skill_mounts=spec.skill_mounts,
                 )
                 endpoint = self._wait_for_ready(container)
             except Exception as exc:
@@ -725,6 +745,7 @@ class DockerWorkerBackend:
         paths: LocalWorkerStatePaths,
         *,
         private_agent_names: frozenset[str] | None,
+        skill_mounts: dict[str, Path] | None = None,
     ) -> _DockerContainer:
         paths.root.mkdir(parents=True, exist_ok=True)
         container = self._read_container(metadata.container_name)
@@ -748,6 +769,7 @@ class DockerWorkerBackend:
                     paths,
                     worker_key=metadata.worker_key,
                     private_agent_names=private_agent_names,
+                    skill_mounts=skill_mounts,
                 ),
                 ports={f"{self.config.worker_port}/tcp": (self.config.publish_host, None)},
                 labels=self._container_labels(metadata),
@@ -927,6 +949,7 @@ class DockerWorkerBackend:
         *,
         worker_key: str | None = None,
         private_agent_names: frozenset[str] | None = None,
+        skill_mounts: dict[str, Path] | None = None,
     ) -> dict[str, dict[str, str]]:
         volumes = {
             str(paths.root): {"bind": self.config.storage_mount_path, "mode": "rw"},
@@ -948,6 +971,11 @@ class DockerWorkerBackend:
             volumes[str(host_path)] = {
                 "bind": container_path,
                 "mode": "ro" if read_only else "rw",
+            }
+        for skill_name, source in _skill_mount_specs(skill_mounts):
+            volumes[str(source)] = {
+                "bind": f"{self.config.storage_mount_path}/skills/{skill_name}",
+                "mode": "ro",
             }
         return volumes
 

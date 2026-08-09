@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 WorkerStatus = Literal["starting", "ready", "idle", "failed"]
@@ -16,6 +17,7 @@ class WorkerSpec:
 
     worker_key: str
     private_agent_names: frozenset[str] | None = None
+    skill_mounts: dict[str, Path] | None = None
 
 
 @dataclass(frozen=True, slots=True)
