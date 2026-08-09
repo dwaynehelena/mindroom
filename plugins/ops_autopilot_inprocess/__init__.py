@@ -1,0 +1,1 @@
+"""Ops-autopilot in-process schedule hook plugin."""
