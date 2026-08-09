@@ -352,6 +352,66 @@ class TestHermesMemoryHandlerReferenceMode:
         receipt = await handler(action, "test-action-6")
         assert receipt.startswith("hermes-native:")
 
+    async def test_delete_purges_overflow_store(self, tmp_path: Path) -> None:
+        """Deleting an externalized record purges the Tier-2 overflow content."""
+        overflow = ProvenanceOverflowStore(str(tmp_path / "overflow.db"))
+        await overflow.open()
+
+        handler = HermesMemoryHandler(
+            argv=("python3", "-c",
+                   "import sys,json; d=json.loads(sys.stdin.readline()); "
+                   "print(json.dumps({'idempotency_key':d['idempotency_key'],'receipt':'hermes-native:sha256:abc','success':True,'version':1}))"),
+            hermes_home=tmp_path,
+            overflow_store=overflow,
+            content_threshold_chars=100,
+            timeout_seconds=30,
+        )
+
+        # Simulate a previously externalized record in the overflow store.
+        await overflow.store(
+            "test-mem-7",
+            {"schema": "mindroom.provenance-memory/1", "memory_id": "test-mem-7", "content": "x" * 5000},
+        )
+        assert await overflow.has("test-mem-7") is True
+
+        action = PropagationAction(
+            action_id="test-action-7",
+            memory_id="test-mem-7",
+            target="hermes",
+            operation="delete",
+            payload=None,
+        )
+
+        receipt = await handler(action, "test-action-7")
+        assert receipt.startswith("hermes-native:")
+        # The Tier-2 overflow record must be purged on delete.
+        assert await overflow.has("test-mem-7") is False
+
+        await overflow.close()
+
+    async def test_delete_without_overflow_store_is_noop(self, tmp_path: Path) -> None:
+        """Delete still succeeds when no overflow store is configured."""
+        handler = HermesMemoryHandler(
+            argv=("python3", "-c",
+                   "import sys,json; d=json.loads(sys.stdin.readline()); "
+                   "print(json.dumps({'idempotency_key':d['idempotency_key'],'receipt':'hermes-native:sha256:abc','success':True,'version':1}))"),
+            hermes_home=tmp_path,
+            overflow_store=None,
+            content_threshold_chars=100,
+            timeout_seconds=30,
+        )
+
+        action = PropagationAction(
+            action_id="test-action-8",
+            memory_id="test-mem-8",
+            target="hermes",
+            operation="delete",
+            payload=None,
+        )
+
+        receipt = await handler(action, "test-action-8")
+        assert receipt.startswith("hermes-native:")
+
 
 # ── Reference payload validation tests ─────────────────────────────────────
 

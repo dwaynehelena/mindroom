@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from mindroom.provenance_memory import PropagationAction, ProvenanceMemoryError
+from mindroom.provenance_overflow import ProvenanceOverflowError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -133,7 +134,16 @@ class HermesMemoryHandler:
             if isinstance(content, str) and len(content) > self.content_threshold_chars:
                 return await self._write_reference(action, idempotency_key)
 
-        return await self._write_direct(action, idempotency_key)
+        receipt = await self._write_direct(action, idempotency_key)
+
+        # Deletes must purge the Tier-2 overflow record alongside the Tier-1
+        # reference pointer so no orphaned full content is left behind when a
+        # previously externalized record is tombstoned.
+        if action.operation == "delete" and self.overflow_store is not None:
+            with suppress(ProvenanceOverflowError):
+                await self.overflow_store.delete(action.memory_id)
+
+        return receipt
 
     async def _write_reference(self, action: PropagationAction, idempotency_key: str) -> str:
         """Store full content in overflow store and write a reference pointer to Hermes."""

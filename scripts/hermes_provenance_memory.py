@@ -49,6 +49,25 @@ def _response(key: str, *, success: bool, receipt: str = "") -> None:
 
 def _entry(memory_id: str, payload: dict[str, Any]) -> tuple[str, str]:
     marker = f"[mindroom-provenance:{hashlib.sha256(memory_id.encode()).hexdigest()}]"
+    if payload.get("mode") == "reference":
+        # Tier-2 externalized record: the full content lives in the overflow
+        # store, and Hermes holds a compact reference pointer that carries a
+        # content preview and digest rather than the full content.
+        reference = {
+            key: payload.get(key)
+            for key in (
+                "content_digest",
+                "content_length",
+                "content_preview",
+                "created_at",
+                "memory_id",
+                "mode",
+                "provenance_store_path",
+                "schema",
+            )
+        }
+        serialized = json.dumps(reference, ensure_ascii=False, separators=(",", ":"), sort_keys=True, allow_nan=False)
+        return marker, f"{marker} {serialized}"
     content = payload.get("content")
     if not isinstance(content, str) or not content.strip():
         raise ValueError
