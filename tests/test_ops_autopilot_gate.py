@@ -81,6 +81,24 @@ async def test_gate_passes_brief_length_argument() -> None:
     assert args["brief_length"] == len("some brief content")
 
 
+@pytest.mark.asyncio
+async def test_gate_never_auto_approves_and_uses_operator_approver() -> None:
+    """The gate must never auto-approve and must route to @dwayne:localhost."""
+    store = AsyncMock()
+    store.request_approval.return_value = SimpleNamespace(
+        status="approved", reason=None, resolved_by="@dwayne:localhost"
+    )
+    with patch("mindroom.ops_autopilot.approval.gate.get_approval_store", return_value=store):
+        gate = ApprovalGate()
+        outcome = await gate.gate("brief", room_id="!r:localhost")
+    # Approval only ever comes from the live store's decision, never implicit.
+    assert outcome.approved is True
+    assert outcome.live is True
+    kwargs = store.request_approval.await_args.kwargs
+    assert kwargs["approver_user_id"] == "@dwayne:localhost"
+    assert kwargs["requester_id"] == "@dwayne:localhost"
+
+
 def test_approval_outcome_defaults() -> None:
     o = ApprovalOutcome(approved=False, status="denied")
     assert o.reason is None
