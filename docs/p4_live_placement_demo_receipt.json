@@ -1,0 +1,82 @@
+{
+  "blocked_count": 0,
+  "elapsed_seconds": 28.09,
+  "generated_at": "2026-08-09T09:02:34.308437+00:00",
+  "p1_transport_enabled": true,
+  "phase_b_gate_results": [
+    {
+      "evidence": "exit=0 elapsed=0.54s | LIVE ENROLL STATUS=200 BODY={\"node_id\":\"phaseb-smoke-openclaw-worker\",\"runtime\":\"openclaw\",\"capabilities\":[\"mesh.worker\"],\"last_seen_at\":\"2026-08-09T09:02:10.919133Z\"}\nGATE_RESULT=LIVE_HANDSHAKE_PASSED",
+      "name": "inverted enrollment handshake",
+      "unit": "Unit1",
+      "verdict": "LIVE_HANDSHAKE_PASSED"
+    },
+    {
+      "evidence": "exit=0 elapsed=5.28s |   elapsed=1.81s\n------------------------------------------------------------------------\n\u2713 GO: real Matrix thread delivery through injected nio client verified.",
+      "name": "real Matrix thread delivery",
+      "unit": "Unit2",
+      "verdict": "GO"
+    },
+    {
+      "evidence": "exit=0 elapsed=12.81s |   elapsed=4.94s\n------------------------------------------------------------------------\n\u2713 GO: real deliver_stream tool-state posting into a live room/thread verified.",
+      "name": "real deliver_stream tool-state posting",
+      "unit": "Unit3",
+      "verdict": "GO"
+    },
+    {
+      "evidence": "exit=0 elapsed=5.22s |   elapsed=1.71s\n------------------------------------------------------------------------\n\u2713 GO: real coordinator-level sync-token replay verified against live homeserver.",
+      "name": "real coordinator sync-token replay",
+      "unit": "Unit5",
+      "verdict": "GO"
+    }
+  ],
+  "placements": [
+    {
+      "blocked": false,
+      "enroll_latency_ms": 48.37,
+      "item": "p4-demo-hermes-a4f99f9e",
+      "job_status": "completed",
+      "node_enrolled": true,
+      "result_attested": true,
+      "roundtrip_latency_ms": 220.9,
+      "runtime": "hermes",
+      "source": "p4-gateway",
+      "target": "hermes-edge-node (runtime=hermes)",
+      "transport": "edge-fleet HTTP over real mesh (live MindRoom API)",
+      "transport_status": "delivered"
+    },
+    {
+      "blocked": false,
+      "enroll_latency_ms": 39.33,
+      "item": "p4-demo-openclaw-a4f99f9e",
+      "job_status": "completed",
+      "node_enrolled": true,
+      "result_attested": true,
+      "roundtrip_latency_ms": 149.22,
+      "runtime": "openclaw",
+      "source": "p4-gateway",
+      "target": "openclaw-edge-node (runtime=openclaw)",
+      "transport": "edge-fleet HTTP over real mesh (live MindRoom API)",
+      "transport_status": "delivered"
+    },
+    {
+      "blocked": false,
+      "deliver_latency_ms": 3605.51,
+      "item": "mindroom-room-mesh-placement",
+      "outbox_id": "mesh-outbox-p4-796ac5",
+      "room_id": "!lynLWYGgdXsmjttHmb:localhost",
+      "roundtrip_latency_ms": 3761.23,
+      "source": "mindroom-gateway",
+      "sync_verified": true,
+      "target": "live-matrix-room/thread",
+      "thread_root_id": "$JraS0OgS--gb0iP1mEABH3kN55u4SQpsNz8xiGHiXa4",
+      "transport": "MatrixMeshTransport + injected nio client (real Synapse :8008)",
+      "transport_status": "delivered"
+    }
+  ],
+  "preflight": {
+    "Matrix homeserver (:8008)": true,
+    "MindRoom API (:8765)": true,
+    "OpenClaw gateway (:18789)": true
+  },
+  "schema": "mindroom.p4-live-placement-demo/1"
+}
