@@ -185,10 +185,12 @@ def build_agent_skills(
         credential_keys if credential_keys is not None else _collect_credential_keys(config, runtime_paths)
     )
 
+    resolved_roots = _resolve_configured_skill_roots(skill_roots)
+
     configured_loader = None
     if agent_config.skills:
         configured_loader = _MindroomSkillsLoader(
-            roots=_resolve_configured_skill_roots(skill_roots),
+            roots=resolved_roots,
             config=config,
             runtime_paths=runtime_paths,
             allowlist=agent_config.skills,
@@ -216,10 +218,74 @@ def build_agent_skills(
     else:
         loaders = [loader for loader in (workspace_loader, configured_loader) if loader is not None]
 
+    if agent_config.skills and config.skill_foundry.enabled:
+        # Fail fast on unsatisfiable *declared* skill-to-skill dependencies
+        # before the skills are materialized into the agent.  Entry points that
+        # live only in the workspace loader (not the configured roots) are
+        # intentionally skipped — they resolve separately.  Only a dependency
+        # that is actually declared but cannot be satisfied aborts startup.
+        _validate_agent_skill_dependencies(agent_config.skills, resolved_roots)
+
     skills = _MindroomSkills(loaders=loaders, output_file_policy=output_file_policy)
     if agent_config.skills or skills.get_skill_names():
         return skills
     return None
+
+
+def _validate_agent_skill_dependencies(
+    agent_skill_names: Sequence[str],
+    skill_roots: Sequence[Path],
+) -> None:
+    """Validate transitive skill-to-skill dependencies without failing on workspace-only skills.
+
+    Raises ``DependencyError`` if a skill reachable from the configured entry
+    points declares a dependency that cannot be satisfied in the given roots.
+    """
+    from collections import deque
+
+    from mindroom.tool_system.skill_deps import DependencyError, find_best_match, _extract_skill_deps
+
+    roots = list(skill_roots)
+    queue: deque[str] = deque(agent_skill_names)
+    visited: set[str] = set()
+    in_progress: set[str] = set()
+
+    while queue:
+        skill_name = queue.popleft()
+        if skill_name in visited:
+            continue
+        visited.add(skill_name)
+        in_progress.add(skill_name)
+
+        # Entry points may live in the workspace loader; skip them here so the
+        # resolution only guards declared dependencies, not workspace-only skills.
+        entry = find_best_match(skill_name, ">=0.0.0", roots)
+        if entry is None:
+            in_progress.discard(skill_name)
+            continue
+
+        frontmatter = _read_skill_frontmatter(entry.path / _SKILL_FILENAME)
+        if frontmatter is None:
+            in_progress.discard(skill_name)
+            continue
+
+        for dep_name, constraint in _extract_skill_deps(frontmatter).items():
+            if dep_name in in_progress:
+                msg = (
+                    f"Circular skill dependency detected: {skill_name!r} depends on {dep_name!r} "
+                    "through a chain already being resolved."
+                )
+                raise DependencyError(msg)
+            dep = find_best_match(dep_name, constraint, roots)
+            if dep is None:
+                msg = (
+                    f"Skill {skill_name!r} declares dependency {dep_name!r} ({constraint!r}) "
+                    "but no satisfying version is installed in the skill roots."
+                )
+                raise DependencyError(msg)
+            if dep_name not in visited:
+                queue.append(dep_name)
+        in_progress.discard(skill_name)
 
 
 @dataclass(frozen=True)
@@ -270,6 +336,24 @@ def get_user_skills_dir() -> Path:
     return Path.home() / ".mindroom" / "skills"
 
 
+def get_registry_cache_dir() -> Path:
+    """Return the registry-installed skill cache directory.
+
+    This is the lowest-priority skill root: user-installed skills always
+    override registry-cached ones during discovery.  The directory is only
+    appended to the default roots when it exists and is a real directory.
+    """
+    return Path.home() / ".mindroom" / "skills-cache"
+
+
+def _registry_cache_skill_root() -> Path | None:
+    """Return the registry cache root when present, else None."""
+    cache_root = get_registry_cache_dir().expanduser().resolve()
+    if not cache_root.exists() or not cache_root.is_dir() or cache_root.is_symlink():
+        return None
+    return cache_root
+
+
 def _get_bundled_skills_dir() -> Path:
     """Return the bundled skills directory from repo checkout or installed package."""
     if _BUNDLED_SKILLS_DEV_DIR.exists():
@@ -280,8 +364,19 @@ def _get_bundled_skills_dir() -> Path:
 
 
 def _get_default_skill_roots() -> list[Path]:
-    """Return the default skill search roots in precedence order."""
-    return _unique_paths([_get_bundled_skills_dir(), *_PLUGIN_SKILL_ROOTS, get_user_skills_dir()])
+    """Return the default skill search roots in precedence order.
+
+    The skill loader gives later roots in this list higher precedence (they
+    overwrite same-named skills from earlier roots).  The registry cache root
+    is therefore placed *first* so it is the lowest priority and user-installed
+    skills always override registry-cached copies.
+    """
+    roots: list[Path] = []
+    cache_root = _registry_cache_skill_root()
+    if cache_root is not None:
+        roots.append(cache_root)
+    roots.extend([_get_bundled_skills_dir(), *_PLUGIN_SKILL_ROOTS, get_user_skills_dir()])
+    return _unique_paths(roots)
 
 
 def _get_agent_workspace_skill_root(runtime_paths: RuntimePaths, agent_name: str) -> Path:
@@ -667,4 +762,6 @@ def _root_origin(root: Path, bundled_root: Path, user_root: Path, plugin_roots: 
         return "user"
     if root in plugin_roots:
         return "plugin"
+    if root == get_registry_cache_dir().expanduser().resolve():
+        return "registry-cache"
     return "custom"
