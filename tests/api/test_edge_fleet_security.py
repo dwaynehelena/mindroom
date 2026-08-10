@@ -78,7 +78,14 @@ def _headers(
 
 @pytest_asyncio.fixture
 async def fleet(tmp_path: Path) -> EdgeFleet:
-    value = EdgeFleet(tmp_path / "fleet.db", AUTHORITY)
+    allowlist = frozenset(
+        {
+            "test-node",
+            "test-node-2",
+            *(f"rate-node-{i}" for i in range(7)),
+        }
+    )
+    value = EdgeFleet(tmp_path / "fleet.db", AUTHORITY, node_allowlist=allowlist)
     await value.open()
     yield value
     await value.close()
@@ -238,7 +245,7 @@ async def test_maximum_job_payload_is_accepted(api) -> None:
 async def test_concurrent_enrollment_race(tmp_path: Path) -> None:
     """Two concurrent enrollments with the same token — only one should succeed."""
     authority = EnrollmentAuthority(b"e" * 32)
-    fleet = EdgeFleet(tmp_path / "race.db", authority)
+    fleet = EdgeFleet(tmp_path / "race.db", authority, node_allowlist=frozenset({"race-node"}))
     await fleet.open()
     try:
         private, public = _keys()

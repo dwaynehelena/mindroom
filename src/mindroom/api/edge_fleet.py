@@ -206,6 +206,7 @@ def create_edge_fleet_router(
     fleet: EdgeFleet,
     *,
     now: Callable[[], datetime] | None = None,
+    node_allowlist: frozenset[str] | None = None,
 ) -> APIRouter:
     """Build an isolated router around one lifecycle-owned fleet instance."""
     clock = now or (lambda: datetime.now(UTC))

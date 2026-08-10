@@ -310,6 +310,16 @@ def _app_runtime_paths(api_app: FastAPI) -> constants.RuntimePaths:
 _EDGE_FLEET_ENABLED_ENV = "MINDROOM_EDGE_FLEET_ENABLED"
 _EDGE_FLEET_PATH_ENV = "MINDROOM_EDGE_FLEET_PATH"
 _EDGE_FLEET_ENROLLMENT_KEY_ENV = "MINDROOM_EDGE_FLEET_ENROLLMENT_KEY"
+_EDGE_FLEET_NODE_ALLOWLIST_ENV = "MINDROOM_EDGE_FLEET_NODE_ALLOWLIST"
+
+
+def _edge_fleet_node_allowlist(runtime_paths: constants.RuntimePaths) -> frozenset[str] | None:
+    """Read the comma-separated enrollment allowlist env var, or None when unset."""
+    raw = runtime_paths.env_value(_EDGE_FLEET_NODE_ALLOWLIST_ENV)
+    if not raw:
+        return None
+    entries = {entry.strip() for entry in raw.split(",") if entry.strip()}
+    return frozenset(entries)
 
 
 def _edge_fleet_from_runtime_paths(runtime_paths: constants.RuntimePaths) -> EdgeFleet | None:
@@ -340,7 +350,8 @@ def _edge_fleet_from_runtime_paths(runtime_paths: constants.RuntimePaths) -> Edg
         fleet_path = runtime_paths.storage_root / "edge_fleet.db"
 
     authority = EnrollmentAuthority(key)
-    fleet = EdgeFleet(fleet_path, authority)
+    allowlist = _edge_fleet_node_allowlist(runtime_paths)
+    fleet = EdgeFleet(fleet_path, authority, node_allowlist=allowlist)
     logger.info(
         "Edge fleet enabled",
         extra={"path": str(fleet_path), "key_length": len(key)},
@@ -355,7 +366,7 @@ def _mount_edge_fleet(api_app: FastAPI, fleet: EdgeFleet | None) -> None:
         return
 
     # Node-facing router (Ed25519 authenticated — no dashboard auth)
-    api_app.include_router(create_edge_fleet_router(fleet))
+    api_app.include_router(create_edge_fleet_router(fleet, node_allowlist=fleet.node_allowlist))
 
     # Admin router (dashboard auth required)
     api_app.include_router(

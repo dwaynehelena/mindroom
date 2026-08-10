@@ -24,7 +24,7 @@ pytestmark = pytest.mark.asyncio
 @pytest_asyncio.fixture
 async def api(tmp_path):
     authority = EnrollmentAuthority(b"e" * 32)
-    fleet = EdgeFleet(tmp_path / "fleet.db", authority)
+    fleet = EdgeFleet(tmp_path / "fleet.db", authority, node_allowlist=frozenset({"node-1"}))
     await fleet.open()
     private = Ed25519PrivateKey.generate()
     raw = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)

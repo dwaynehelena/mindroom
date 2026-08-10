@@ -139,11 +139,22 @@ class EnrollmentAuthority:
 class EdgeFleet:
     """Persistent node inventory, job queue, leases and result attestations."""
 
-    def __init__(self, path: Path, authority: EnrollmentAuthority) -> None:
+    def __init__(
+        self,
+        path: Path,
+        authority: EnrollmentAuthority,
+        node_allowlist: frozenset[str] | None = None,
+    ) -> None:
         self._path = path
         self._authority = authority
+        self._node_allowlist = node_allowlist
         self._db: aiosqlite.Connection | None = None
         self._lock = asyncio.Lock()
+
+    @property
+    def node_allowlist(self) -> frozenset[str] | None:
+        """The configured enrollment allowlist, or None when not restricted."""
+        return self._node_allowlist
 
     async def open(self) -> None:
         """Open the fleet database."""
@@ -227,6 +238,9 @@ class EdgeFleet:
         )
         if not node.node_id:
             message = "edge node identity is blank"
+            raise EdgeFleetError(message)
+        if self._node_allowlist is None or node.node_id not in self._node_allowlist:
+            message = "edge node is not on the enrollment allowlist"
             raise EdgeFleetError(message)
         async with self._lock:
             db = self._required_db()

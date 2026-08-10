@@ -34,7 +34,7 @@ def _keys():
 @pytest_asyncio.fixture
 async def fleet(tmp_path):
     authority = EnrollmentAuthority(b"e" * 32)
-    value = EdgeFleet(tmp_path / "fleet.db", authority)
+    value = EdgeFleet(tmp_path / "fleet.db", authority, node_allowlist=frozenset({"node-1"}))
     await value.open()
     yield value, authority
     await value.close()

@@ -2339,7 +2339,7 @@ async def main(
     *,
     api: bool = True,
     api_port: int = 8765,
-    api_host: str = "0.0.0.0",  # noqa: S104
+    api_host: str = "127.0.0.1",
 ) -> None:
     """Main entry point for the multi-agent bot system."""
     storage_path = runtime_paths.storage_root

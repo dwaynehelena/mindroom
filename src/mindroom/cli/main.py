@@ -121,7 +121,7 @@ def marketplace(
     server_thread.start()
     ready.wait(timeout=10)
 
-    url = f"http://{'localhost' if host in ('0.0.0.0', '127.0.0.1') else host}:{port}"
+    url = f"http://{'localhost' if host in ('127.0.0.1', '::1') else host}:{port}"
     console.print(f"[green]Skill Foundry marketplace:[/green] {url}")
     if open_browser:
         webbrowser.open(url)
@@ -173,7 +173,7 @@ def run(
         help="Port for the bundled dashboard/API server",
     ),
     api_host: str = typer.Option(
-        "0.0.0.0",  # noqa: S104
+        "127.0.0.1",
         "--api-host",
         help="Host for the bundled dashboard/API server",
     ),
@@ -247,7 +247,7 @@ async def _run(
         from mindroom.frontend_assets import ensure_frontend_dist_dir  # noqa: PLC0415
 
         frontend_dir = ensure_frontend_dist_dir(runtime_paths)
-        display_host = "localhost" if api_host == "0.0.0.0" else api_host  # noqa: S104
+        display_host = "localhost" if api_host in ("127.0.0.1", "::1") else api_host
         if frontend_dir is None:
             console.print("Dashboard: unavailable (frontend assets missing)")
             console.print("  Install Bun or provide MINDROOM_FRONTEND_DIST when running from a source checkout.")
