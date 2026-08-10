@@ -87,10 +87,6 @@ async def test_boot_succeeds_with_at_least_one_agent(tmp_path: Path) -> None:
             "mindroom.orchestrator._MultiAgentOrchestrator._sync_mcp_manager",
             new=AsyncMock(return_value=set()),
         ),
-        patch(
-            "mindroom.orchestrator._MultiAgentOrchestrator._sync_event_cache_service",
-            new=AsyncMock(),
-        ),
         patch("mindroom.orchestrator._MultiAgentOrchestrator._configure_approval_store_transport"),
         patch("mindroom.orchestrator._MultiAgentOrchestrator._activate_hook_registry"),
         patch("mindroom.orchestrator._MultiAgentOrchestrator._create_managed_bot"),
