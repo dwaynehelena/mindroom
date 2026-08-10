@@ -227,37 +227,62 @@ class TestRegistryIndexFetcher:
 
 
 class TestSkillIndex:
+    def _make_index(
+        self,
+        registry: SkillRegistry,
+        tmp_path: Path,
+        installed_index: InstalledSkillsIndex | None = None,
+    ) -> SkillIndex:
+        """Build a ``SkillIndex`` fully scoped to the fixture's ``tmp_path``.
+
+        ``SkillIndex`` defaults its ``index_fetcher`` to a
+        ``RegistryIndexFetcher()`` that reads the user's real home cache
+        (``~/.openclaw/skill-cache``) and its ``installed_index`` to the user's
+        real installed-skills file.  That leaks whatever skills exist in the
+        developer's home directory into ``search()`` results, so the tests must
+        scope both the fetcher and the installed index to the isolated fixture
+        directory.  This helper is the single place that does so.
+        """
+        from mindroom.tool_system.index import IndexConfig, RegistryIndexFetcher
+
+        fetcher = RegistryIndexFetcher(
+            IndexConfig(
+                cache_path=tmp_path / "skill-cache",
+                cache_ttl_seconds=0,
+            ),
+        )
+        return SkillIndex(
+            registry,
+            index_fetcher=fetcher,
+            installed_index=installed_index or InstalledSkillsIndex(tmp_path / "installed.json"),
+        )
+
     def test_search_all(self, registry_with_data: SkillRegistry, tmp_path: Path) -> None:
         """Search with no query returns all skills."""
-        installed_index = InstalledSkillsIndex(tmp_path / "installed.json")
-        index = SkillIndex(registry_with_data, installed_index=installed_index)
+        index = self._make_index(registry_with_data, tmp_path)
         results = index.search()
         assert len(results) == 3
 
     def test_search_by_name(self, registry_with_data: SkillRegistry, tmp_path: Path) -> None:
-        installed_index = InstalledSkillsIndex(tmp_path / "installed.json")
-        index = SkillIndex(registry_with_data, installed_index=installed_index)
+        index = self._make_index(registry_with_data, tmp_path)
         results = index.search(query="data")
         assert len(results) >= 1
         assert all("data" in r.name.lower() or "data" in r.description.lower() for r in results)
 
     def test_search_by_author(self, registry_with_data: SkillRegistry, tmp_path: Path) -> None:
-        installed_index = InstalledSkillsIndex(tmp_path / "installed.json")
-        index = SkillIndex(registry_with_data, installed_index=installed_index)
+        index = self._make_index(registry_with_data, tmp_path)
         results = index.search(author="bob")
         assert len(results) == 1
         assert results[0].name == "web-scraper"
 
     def test_search_by_tag(self, registry_with_data: SkillRegistry, tmp_path: Path) -> None:
-        installed_index = InstalledSkillsIndex(tmp_path / "installed.json")
-        index = SkillIndex(registry_with_data, installed_index=installed_index)
+        index = self._make_index(registry_with_data, tmp_path)
         results = index.search(tags=["utility"])
         assert len(results) == 1
         assert results[0].name == "data-processor"
 
     def test_search_installed_only(self, registry_with_data: SkillRegistry, tmp_path: Path) -> None:
-        installed_index = InstalledSkillsIndex(tmp_path / "installed.json")
-        index = SkillIndex(registry_with_data, installed_index=installed_index)
+        index = self._make_index(registry_with_data, tmp_path)
         # No skills are installed yet
         results = index.search(include_installed_only=True)
         assert results == []
@@ -268,7 +293,7 @@ class TestSkillIndex:
         installed_index = InstalledSkillsIndex(installed_index_path)
         installed_index.add("data-processor", "1.0.0", install_path="/tmp/skills/data-processor")
 
-        index = SkillIndex(registry_with_data, installed_index=installed_index)
+        index = self._make_index(registry_with_data, tmp_path, installed_index=installed_index)
         results = index.search()
         dp = next(r for r in results if r.name == "data-processor")
         assert dp.installed_version == "1.0.0"
@@ -278,7 +303,7 @@ class TestSkillIndex:
         installed_index = InstalledSkillsIndex(tmp_path / "installed.json")
         installed_index.add("data-processor", "1.0.0")
 
-        index = SkillIndex(registry_with_data, installed_index=installed_index)
+        index = self._make_index(registry_with_data, tmp_path, installed_index=installed_index)
         results = index.list_installed()
         assert len(results) == 1
         assert results[0].name == "data-processor"
@@ -288,15 +313,14 @@ class TestSkillIndex:
         # Install an older version
         installed_index.add("data-processor", "0.5.0")
 
-        index = SkillIndex(registry_with_data, installed_index=installed_index)
+        index = self._make_index(registry_with_data, tmp_path, installed_index=installed_index)
         results = index.list_updatable()
         assert len(results) == 1
         assert results[0].name == "data-processor"
         assert results[0].is_up_to_date is False
 
     def test_get_detail(self, registry_with_data: SkillRegistry, tmp_path: Path) -> None:
-        installed_index = InstalledSkillsIndex(tmp_path / "installed.json")
-        index = SkillIndex(registry_with_data, installed_index=installed_index)
+        index = self._make_index(registry_with_data, tmp_path)
         detail = index.get_detail("data-processor")
         assert detail is not None
         assert detail.name == "data-processor"
@@ -304,19 +328,16 @@ class TestSkillIndex:
         assert len(detail.all_versions) == 2
 
     def test_get_detail_not_found(self, registry_with_data: SkillRegistry, tmp_path: Path) -> None:
-        installed_index = InstalledSkillsIndex(tmp_path / "installed.json")
-        index = SkillIndex(registry_with_data, installed_index=installed_index)
+        index = self._make_index(registry_with_data, tmp_path)
         assert index.get_detail("nonexistent") is None
 
     def test_refresh(self, registry_with_data: SkillRegistry, tmp_path: Path) -> None:
-        installed_index = InstalledSkillsIndex(tmp_path / "installed.json")
-        index = SkillIndex(registry_with_data, installed_index=installed_index)
+        index = self._make_index(registry_with_data, tmp_path)
         result = index.refresh()
         assert isinstance(result, RegistryIndex)
 
     def test_clear_cache(self, registry_with_data: SkillRegistry, tmp_path: Path) -> None:
-        installed_index = InstalledSkillsIndex(tmp_path / "installed.json")
-        index = SkillIndex(registry_with_data, installed_index=installed_index)
+        index = self._make_index(registry_with_data, tmp_path)
         # Should not raise
         index.clear_cache()
 
