@@ -2417,7 +2417,7 @@ class TestRunApiFlags:
         kwargs = mock_main.call_args
         assert kwargs.kwargs["api"] is True
         assert kwargs.kwargs["api_port"] == 8765
-        assert kwargs.kwargs["api_host"] == "0.0.0.0"  # noqa: S104
+        assert kwargs.kwargs["api_host"] == "127.0.0.1"
 
     def test_run_no_api_flag(self, tmp_path: Path) -> None:
         """Run --no-api passes api=False to bot main."""
