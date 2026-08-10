@@ -935,6 +935,7 @@ def test_health_check_reports_stale_matrix_sync(test_client: TestClient) -> None
         "last_sync_time": stale_sync_time.isoformat(),
         "e2ee": e2ee_stats().as_dict(),
         "stale_sync_entities": ["router"],
+        "edge_fleet": {"enabled": False},
     }
     reset_matrix_sync_health()
     reset_runtime_state()
@@ -996,6 +997,7 @@ def test_health_after_watchdog_restart_stays_unhealthy_until_sync(test_client: T
         "last_sync_time": stale_time.isoformat(),
         "e2ee": e2ee_stats().as_dict(),
         "stale_sync_entities": ["router"],
+        "edge_fleet": {"enabled": False},
     }
 
     reset_matrix_sync_health()
@@ -5232,6 +5234,7 @@ def test_health_repeated_restarts_do_not_extend_first_sync_grace(test_client: Te
         "last_sync_time": None,
         "e2ee": e2ee_stats().as_dict(),
         "stale_sync_entities": ["router"],
+        "edge_fleet": {"enabled": False},
     }
     assert _matrix_sync_state["router"].loop_started_time == first_start_time
 

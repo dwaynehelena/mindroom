@@ -88,6 +88,13 @@ def test_client(temp_config_file: Path) -> TestClient:
     # Force reload of config
     config_lifecycle.load_config_into_app(main._app_runtime_paths(main.app), main.app)
 
+    # The module-level ``_edge_fleet_instance`` is computed at import time from
+    # the developer's real environment, so a machine with
+    # ``MINDROOM_EDGE_FLEET_ENABLED=true`` leaks an enabled fleet into every
+    # health response.  Pin it to ``None`` so health tests deterministically
+    # report ``edge_fleet: {"enabled": False}`` regardless of the host env.
+    main._edge_fleet_instance = None
+
     # Create test client
     return TestClient(main.app)
 
