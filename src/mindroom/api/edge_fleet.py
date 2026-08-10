@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from mindroom.edge_fleet import EdgeFleet, EdgeFleetError, EdgeJob, EdgeNode, JobLease, WorkerRuntime
@@ -33,6 +33,8 @@ _REVOKE_PERMISSION = "admin.nodes.revoke"
 _REVOKE_RATE_LIMIT = 5
 # A burst is a principal exceeding the revocation rate limit in one window.
 _REVOKE_BURST_ALERT_EVENT = "admin.node_revoke_burst"
+# AC-7: maximum length of a node_id path parameter (input validation).
+_NODE_ID_MAX_LENGTH = 128
 
 logger = logging.getLogger("mindroom.api.edge_fleet")
 
@@ -426,7 +428,14 @@ def create_edge_fleet_admin_router(
 
     @router.delete("/nodes/{node_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def revoke_node(
-        node_id: str,
+        node_id: Annotated[
+            str,
+            Path(
+                min_length=1,
+                max_length=_NODE_ID_MAX_LENGTH,
+                description="Edge node identity to revoke (1-128 chars).",
+            ),
+        ],
         request: Request,
         _user: Annotated[dict, Depends(lambda: None)] = None,
     ) -> Response:
@@ -494,18 +503,17 @@ def _admin_principal(request: Request, user: dict | None) -> str:
 def _require_revoke_permission(request: Request, user: dict | None, principal: str) -> None:
     """Enforce the ``admin.nodes.revoke`` permission, logging any rejection.
 
-    The permission is granted when the authenticated principal is an admin
-    (the router is mounted behind ``verify_user``) and, when a permission
-    list is present on the auth user, the principal is listed for
-    ``admin.nodes.revoke``. A missing permission list is treated as
-    admin-granted (the dashboard owner is the sole admin).
+    The permission is granted only when the authenticated principal is
+    explicitly listed for ``admin.nodes.revoke``. This is fail-closed: a
+    missing ``permissions`` key (as produced by ``verify_user`` in
+    production, which never populates a ``permissions`` field) is treated as
+    NOT granted, so an authenticated user without the explicit permission is
+    denied (403).
     """
     granted = False
     if isinstance(user, dict):
         permissions = user.get("permissions")
-        if permissions is None:
-            granted = True
-        elif isinstance(permissions, (list, tuple, set, frozenset)):
+        if isinstance(permissions, (list, tuple, set, frozenset)):
             granted = _REVOKE_PERMISSION in permissions
         elif isinstance(permissions, dict):
             granted = bool(permissions.get(_REVOKE_PERMISSION))

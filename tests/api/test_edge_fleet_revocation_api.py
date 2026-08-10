@@ -27,7 +27,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import Depends, FastAPI, HTTPException, Request
 
 from mindroom.api.edge_fleet import create_edge_fleet_admin_router, create_edge_fleet_router
-from mindroom.edge_fleet import EdgeFleet, EnrollmentAuthority, node_request_attestation_payload
+from mindroom.edge_fleet import EdgeFleet, EdgeFleetError, EnrollmentAuthority, node_request_attestation_payload
 
 NOW = datetime(2026, 7, 18, tzinfo=UTC)
 pytestmark = pytest.mark.asyncio
@@ -70,7 +70,13 @@ async def api(tmp_path):
 
     async def require_admin(request: Request, user: dict | None = None) -> dict:
         # Simulates verify_user: an authenticated admin principal stored in scope.
-        principal = user or {"user_id": "admin-1", "email": "admin@example.com"}
+        # The permission is granted explicitly so the happy-path tests exercise
+        # the authorized flow (fail-closed enforcement is covered separately).
+        principal = user or {
+            "user_id": "admin-1",
+            "email": "admin@example.com",
+            "permissions": ["admin.nodes.revoke"],
+        }
         request.scope["auth_user"] = principal
         return principal
 
@@ -191,6 +197,65 @@ async def test_ac5_audit_and_revocation_are_same_transaction(api) -> None:
     assert audit[0] == 1
 
 
+async def test_ac5_audit_failure_rolls_back_revocation(tmp_path) -> None:
+    """A genuine rollback test: if the audit write fails, the whole
+    revocation transaction is rolled back (node NOT revoked, leases intact).
+
+    The audit INSERT and the tombstone/lease-cancellation live in the same
+    BEGIN IMMEDIATE ... COMMIT block. Forcing the audit write to fail must
+    roll back the tombstone and the lease cancellation so the node remains
+    active and its leases are untouched.
+    """
+    authority = EnrollmentAuthority(b"e" * 32)
+    fleet = EdgeFleet(tmp_path / "fleet.db", authority, node_allowlist=frozenset({"node-1"}))
+    await fleet.open()
+    await _enroll(fleet, "node-1")
+
+    # Give the node an active lease so we can assert it survives the rollback.
+    await fleet.queue_job(
+        job_id="job-1",
+        runtime="openclaw",
+        required_capabilities=("notify",),
+        payload={"message": "hello"},
+    )
+    lease = await fleet.acquire(
+        node_id="node-1",
+        observed_at=NOW,
+        lease_seconds=60,
+    )
+    assert lease is not None
+    assert (await fleet.job("job-1")).status == "leased"
+
+    # Force the audit INSERT to fail inside the transaction.
+    real_execute = fleet._db.execute
+
+    async def failing_execute(sql, *args, **kwargs):
+        if isinstance(sql, str) and "INSERT INTO edge_fleet_audit" in sql:
+            raise EdgeFleetError("audit write failed (injected)")
+        return await real_execute(sql, *args, **kwargs)
+
+    fleet._db.execute = failing_execute  # type: ignore[method-assign]
+
+    with pytest.raises(EdgeFleetError):
+        await fleet.revoke_node("node-1", observed_at=NOW, actor="admin-1")
+
+    # Restore so we can inspect the DB.
+    fleet._db.execute = real_execute  # type: ignore[method-assign]
+
+    # The tombstone must have been rolled back: node is NOT revoked.
+    row = await (await fleet._db.execute("SELECT revoked_at FROM edge_node WHERE node_id=?", ("node-1",))).fetchone()
+    assert row is not None and row[0] is None, "node must not be revoked after audit failure"
+
+    # The lease cancellation must have been rolled back: lease is intact.
+    assert (await fleet.job("job-1")).status == "leased"
+
+    # No audit row was committed.
+    audit = await (await fleet._db.execute("SELECT COUNT(*) FROM edge_fleet_audit")).fetchone()
+    assert audit[0] == 0
+
+    await fleet.close()
+
+
 # ---------------------------------------------------------------------------
 # AC-6: admin-only authz with logged rejection
 # ---------------------------------------------------------------------------
@@ -215,6 +280,39 @@ async def test_ac6_revocation_requires_permission(tmp_path) -> None:
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.delete("/api/edge-fleet-admin/nodes/node-1")
         assert response.status_code == 403
+    await fleet.close()
+
+
+async def test_ac6_fail_closed_when_permissions_key_absent(tmp_path) -> None:
+    """Simulate the real ``verify_user`` output (no ``permissions`` key).
+
+    In production ``verify_user`` sets ``request.scope["auth_user"]`` to
+    ``{"user_id": ..., "email": ...}`` and never populates a ``permissions``
+    field. The permission check must be fail-closed: such an authenticated
+    user is denied (403), never treated as having ``admin.nodes.revoke``.
+    """
+    authority = EnrollmentAuthority(b"e" * 32)
+    fleet = EdgeFleet(tmp_path / "fleet.db", authority, node_allowlist=frozenset({"node-1"}))
+    await fleet.open()
+    await _enroll(fleet, "node-1")
+
+    # Mirrors verify_user exactly: no "permissions" key at all.
+    async def require_admin_verify_user_shape(request: Request, user: dict | None = None) -> dict:
+        principal = user or {"user_id": "admin-1", "email": "admin@example.com"}
+        request.scope["auth_user"] = principal
+        return principal
+
+    app = FastAPI()
+    app.include_router(
+        create_edge_fleet_admin_router(fleet, now=lambda: NOW),
+        dependencies=[Depends(require_admin_verify_user_shape)],
+    )
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.delete("/api/edge-fleet-admin/nodes/node-1")
+        assert response.status_code == 403
+    # The node must NOT have been revoked.
+    row = await (await fleet._db.execute("SELECT revoked_at FROM edge_node WHERE node_id=?", ("node-1",))).fetchone()
+    assert row is not None and row[0] is None
     await fleet.close()
 
 
@@ -251,8 +349,19 @@ async def test_ac7_blank_node_id_is_rejected(api) -> None:
 
 async def test_ac7_oversized_node_id_is_rejected(api) -> None:
     client, _fleet = api
+    # A node_id longer than the max length is rejected as invalid input (422),
+    # not treated as a never-existed node (404).
     response = await client.delete("/api/edge-fleet-admin/nodes/" + "x" * 10_000)
-    assert response.status_code == 404  # never existed, so 404
+    assert response.status_code == 422
+
+
+async def test_ac7_max_length_node_id_is_accepted(api) -> None:
+    client, fleet = api
+    # A node_id exactly at the max length is valid input; it is a real
+    # never-enrolled id, so the endpoint returns 404 (not 422).
+    node_id = "n" * 128
+    response = await client.delete(f"/api/edge-fleet-admin/nodes/{node_id}")
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------
