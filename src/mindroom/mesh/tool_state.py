@@ -57,7 +57,9 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agno.models.response import ToolExecution  # noqa: TC002  # type annotation + forwarded to tool_system
 
-from mindroom.delivery_gateway import StreamingDeliveryRequest
+from mindroom.delivery_gateway import ResponseIdentity, StreamingDeliveryRequest
+from mindroom.dispatch_source import MESSAGE_SOURCE_KIND
+from mindroom.hooks import MessageEnvelope
 from mindroom.mesh.lifecycle import MeshLifecycleEvent
 from mindroom.message_target import MessageTarget
 from mindroom.tool_system.events import (
@@ -67,6 +69,7 @@ from mindroom.tool_system.events import (
     format_tool_completed_event,
     format_tool_started_event,
 )
+from mindroom.turn_origin import classify_turn_origin
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -145,6 +148,13 @@ class MeshToolStateChunk:
     trace: ToolTraceEntry
     room_id: str
     thread_id: str | None
+    #: The Matrix event that caused this tool-state delta (the worker's source
+    #: turn), used to build the ``ResponseIdentity`` carried by the live
+    #: ``StreamingDeliveryRequest``.  ``None`` when the delta has no causing
+    #: event (e.g. a synthetic/forwarded delta without a source event).
+    causing_event_id: str | None = None
+    #: Correlation id for the causing turn, used to key the response identity.
+    correlation_id: str | None = None
 
     def as_structured_chunk(self) -> object:
         """Return a ``StructuredStreamChunk``-compatible shape carrying this trace."""
@@ -231,6 +241,7 @@ class MatrixToolStateSink:
         request = StreamingDeliveryRequest(
             target=target,
             response_stream=stream,
+            identity=self._response_identity(chunk),
             show_tool_calls=self.show_tool_calls,
             tool_trace_collector=self.tool_trace_collector,
         )
@@ -242,6 +253,42 @@ class MatrixToolStateSink:
             # context).  The request is recorded so tests can still assert what
             # would be streamed, and delivery is deferred to the caller's loop.
             return
+
+    def _response_identity(self, chunk: MeshToolStateChunk) -> ResponseIdentity:
+        """Build the ``ResponseIdentity`` for one forwarded tool-state delta.
+
+        Mirrors how upstream builds ``ResponseIdentity`` (see
+        ``response_runner._response_identity``): the causing event id keys the
+        envelope's ``source_event_id`` and the correlation id, and the target
+        is the resolved ``MessageTarget``.  When the chunk carries no causing
+        event, a synthetic source event id is derived from the session so the
+        identity is still well-formed for the streaming delivery path.
+        """
+        source_event_id = chunk.causing_event_id or f"mesh-tool-state:{chunk.session_id}:{chunk.sequence}"
+        correlation_id = chunk.correlation_id or source_event_id
+        target = self.target_resolver(chunk) if self.target_resolver is not None else self._default_target(chunk)
+        envelope = MessageEnvelope(
+            source_event_id=source_event_id,
+            target=target,
+            body="",
+            attachment_ids=(),
+            mentioned_agents=(),
+            agent_name=chunk.worker_id,
+            origin=classify_turn_origin(
+                transport_sender_id=chunk.worker_id,
+                requester_id=chunk.worker_id,
+                sender_entity_name=None,
+                requester_entity_name=None,
+                source_kind=MESSAGE_SOURCE_KIND,
+                original_sender=None,
+                trusted_user_relay=False,
+            ),
+        )
+        return ResponseIdentity(
+            response_kind="tool_state_stream",
+            response_envelope=envelope,
+            correlation_id=correlation_id,
+        )
 
     async def _run_stream(self, request: StreamingDeliveryRequest) -> None:
         """Run one live streaming delivery against the bound ``deliver_stream``."""
