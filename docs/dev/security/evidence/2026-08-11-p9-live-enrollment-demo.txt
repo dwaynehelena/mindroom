@@ -16,24 +16,26 @@ P9 EDGE FLEET — LIVE CROSS-DEVICE ENROLLMENT DEMO
 
   --- Device: demo-openclaw-device (openclaw) ---
   [demo-openclaw-device] enrollment token issued
-Traceback (most recent call last):
-  File "/Users/dwayne/mindroom/edge_fleet_cross_device_demo.py", line 221, in <module>
-    asyncio.run(main())
-    ~~~~~~~~~~~^^^^^^^^
-  File "/Users/dwayne/miniforge3/lib/python3.13/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-           ~~~~~~~~~~^^^^^^
-  File "/Users/dwayne/miniforge3/lib/python3.13/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
-  File "/Users/dwayne/miniforge3/lib/python3.13/asyncio/base_events.py", line 725, in run_until_complete
-    return future.result()
-           ~~~~~~~~~~~~~^^
-  File "/Users/dwayne/mindroom/edge_fleet_cross_device_demo.py", line 191, in main
-    r = await _demo_device(**d)
-        ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/dwayne/mindroom/edge_fleet_cross_device_demo.py", line 124, in _demo_device
-    await client.enroll(token)
-  File "/Users/dwayne/mindroom/src/mindroom/edge_node.py", line 177, in enroll
-    raise EdgeNodeError(message)
-mindroom.edge_node.EdgeNodeError: edge node enrollment was rejected
+  [demo-openclaw-device] enrolled
+  [demo-openclaw-device] heartbeat sent
+  [demo-openclaw-device] no job available to lease
+
+  --- Device: demo-hermes-device (hermes) ---
+  [demo-hermes-device] enrollment token issued
+  [demo-hermes-device] enrolled
+  [demo-hermes-device] heartbeat sent
+  [demo-hermes-device] no job available to lease
+
+[3] Verify completed jobs via admin API
+  demo-job-openclaw-001: status=completed node=demo-openclaw-device result_attested=yes
+    result={"device": "demo-openclaw-device", "echo": {"module": "edge_fleet", "task": "refactor"}, "runtime": "openclaw"}
+  demo-job-hermes-001: status=completed node=demo-hermes-device result_attested=yes
+    result={"device": "demo-hermes-device", "echo": {"corpus": "edge_fleet_docs", "task": "summarize"}, "runtime": "hermes"}
+
+[4] Final node inventory
+  demo-hermes-device (hermes) caps=['nlp', 'memory'] last_seen=2026-08-10T17:29:44.433645Z
+  demo-openclaw-device (openclaw) caps=['code', 'browser'] last_seen=2026-08-10T17:29:44.416722Z
+
+======================================================================
+DEMO COMPLETE — all steps passed
+======================================================================
