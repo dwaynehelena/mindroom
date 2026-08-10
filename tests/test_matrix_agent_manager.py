@@ -18,7 +18,7 @@ from mindroom.config.main import Config
 from mindroom.config.matrix import MindRoomUserConfig
 from mindroom.matrix import provisioning
 from mindroom.matrix.client import PermanentMatrixStartupError
-from mindroom.matrix.client_session import olm_store_dir
+from mindroom.matrix.client_session import DEFAULT_MATRIX_SYNC_STORAGE, olm_store_dir
 from mindroom.matrix.state import MatrixState
 from mindroom.matrix.users import (
     INTERNAL_USER_AGENT_NAME,
@@ -1376,6 +1376,7 @@ class TestAgentLogin:
                 agent_user.user_id,
                 agent_user.password,
                 runtime_paths=runtime_paths,
+                sync_storage=DEFAULT_MATRIX_SYNC_STORAGE,
             )
 
     @pytest.mark.asyncio
@@ -1413,6 +1414,7 @@ class TestAgentLogin:
             user_id="@mindroom_calculator:localhost",
             token=APPSERVICE_TOKEN,
             runtime_paths=runtime_paths,
+            sync_storage=DEFAULT_MATRIX_SYNC_STORAGE,
         )
 
     @pytest.mark.asyncio
@@ -1560,6 +1562,7 @@ class TestAgentLogin:
             "@mindroom_calculator:localhost",
             TEST_PASSWORD,
             runtime_paths=runtime_paths,
+            sync_storage=DEFAULT_MATRIX_SYNC_STORAGE,
         )
 
     @pytest.mark.asyncio

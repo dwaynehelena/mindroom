@@ -65,6 +65,22 @@ class EdgeJob:
     result_signature: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class RevokeOutcome:
+    """The durable result of one node revocation request.
+
+    ``existed`` is True when a node record with this ``node_id`` was ever
+    present (whether already revoked or not). ``already_revoked`` is True when
+    the tombstone was already set, making the request idempotent. Together
+    these let the API return ``204`` for any node that exists (revoked or not)
+    and a true ``404`` only for a ``node_id`` that never existed.
+    """
+
+    node_id: str
+    existed: bool
+    already_revoked: bool
+
+
 class EnrollmentAuthority:
     """Issue and verify short-lived coordinator-authenticated enrollment tokens."""
 
@@ -173,7 +189,8 @@ class EdgeFleet:
               runtime TEXT NOT NULL CHECK(runtime IN ('openclaw','hermes')),
               public_key TEXT NOT NULL,
               capabilities_json TEXT NOT NULL,
-              last_seen_at TEXT NOT NULL
+              last_seen_at TEXT NOT NULL,
+              revoked_at TEXT
             );
             CREATE TABLE IF NOT EXISTS edge_request_nonce (
               node_id TEXT NOT NULL,
@@ -193,8 +210,17 @@ class EdgeFleet:
               result_json TEXT,
               result_signature TEXT
             );
+            CREATE TABLE IF NOT EXISTS edge_fleet_audit (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              event TEXT NOT NULL,
+              node_id TEXT,
+              actor TEXT,
+              detail TEXT,
+              occurred_at TEXT NOT NULL
+            );
             """,
         )
+        await self._migrate_revocation_schema()
         await self._db.commit()
 
     async def close(self) -> None:
@@ -202,6 +228,35 @@ class EdgeFleet:
         if self._db is not None:
             await self._db.close()
             self._db = None
+
+    async def _migrate_revocation_schema(self) -> None:
+        """Add revocation columns/audit to a database created before this feature.
+
+        New databases get the full schema from ``executescript`` in ``open``,
+        so this only patches pre-existing databases. It is idempotent.
+        """
+        node_row = await (
+            await self._required_db().execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='edge_node'",
+            )
+        ).fetchone()
+        if node_row is None or "'revoked_at'" not in str(node_row[0]):
+            try:
+                await self._required_db().execute("ALTER TABLE edge_node ADD COLUMN revoked_at TEXT")
+            except Exception:  # noqa: BLE001 - column may already exist from a concurrent writer
+                pass
+        await self._required_db().executescript(
+            """
+            CREATE TABLE IF NOT EXISTS edge_fleet_audit (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              event TEXT NOT NULL,
+              node_id TEXT,
+              actor TEXT,
+              detail TEXT,
+              occurred_at TEXT NOT NULL
+            );
+            """,
+        )
 
     def issue_enrollment(
         self,
@@ -256,17 +311,20 @@ class EdgeFleet:
                     raise EdgeFleetError(message)
                 existing = await (
                     await db.execute(
-                        "SELECT runtime,public_key,capabilities_json FROM edge_node WHERE node_id=?",
+                        "SELECT runtime,public_key,capabilities_json,revoked_at FROM edge_node WHERE node_id=?",
                         (node.node_id,),
                     )
                 ).fetchone()
+                if existing is not None and existing[3] is not None:
+                    message = "edge node identity is revoked and cannot be re-enrolled"
+                    raise EdgeFleetError(message)
                 identity = (node.runtime, node.public_key, _json_text(list(node.capabilities)))
                 if existing is None:
                     await db.execute(
-                        "INSERT INTO edge_node VALUES(?,?,?,?,?)",
+                        "INSERT INTO edge_node VALUES(?,?,?,?,?,NULL)",
                         (node.node_id, *identity, observed.isoformat()),
                     )
-                elif tuple(existing) != identity:
+                elif tuple(existing[:3]) != identity:
                     message = "edge node identity equivocation denied"
                     raise EdgeFleetError(message)
                 else:
@@ -291,12 +349,15 @@ class EdgeFleet:
         observed = _utc(observed_at)
         row = await (
             await self._required_db().execute(
-                "SELECT runtime,public_key FROM edge_node WHERE node_id=?",
+                "SELECT runtime,public_key,revoked_at FROM edge_node WHERE node_id=?",
                 (node_id,),
             )
         ).fetchone()
         if row is None:
             message = "edge node is not enrolled"
+            raise EdgeFleetError(message)
+        if row[2] is not None:
+            message = "edge node identity is revoked"
             raise EdgeFleetError(message)
         normalized = tuple(dict.fromkeys(capabilities))
         await self._required_db().execute(
@@ -305,6 +366,70 @@ class EdgeFleet:
         )
         await self._required_db().commit()
         return EdgeNode(node_id, row[0], row[1], normalized, observed)
+
+    async def revoke_node(
+        self,
+        node_id: str,
+        *,
+        observed_at: datetime,
+        actor: str = "unknown",
+    ) -> RevokeOutcome:
+        """Soft-delete one node identity and fail it closed in one transaction.
+
+        The revocation is a tombstone (``revoked_at`` set) rather than a hard
+        delete so it is recoverable. In the same transaction it:
+
+        * marks every active lease held by the node as cancelled (status
+          ``leased`` -> ``queued`` with the lease cleared so no worker can
+          complete it and the job is re-leasable), and
+        * appends an immutable row to the ``edge_fleet_audit`` table.
+
+        A revoked identity is blocked from re-enrolling and from every
+        authenticated node request until it is explicitly cleared. Repeated
+        revocation of an already-revoked node is idempotent (no new audit row
+        is appended for the second call).
+        """
+        observed = _utc(observed_at)
+        if not node_id:
+            message = "edge node identity is blank"
+            raise EdgeFleetError(message)
+        async with self._lock:
+            db = self._required_db()
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                row = await (
+                    await db.execute(
+                        "SELECT revoked_at FROM edge_node WHERE node_id=?",
+                        (node_id,),
+                    )
+                ).fetchone()
+                if row is None:
+                    await db.commit()
+                    return RevokeOutcome(node_id=node_id, existed=False, already_revoked=False)
+                if row[0] is not None:
+                    await db.commit()
+                    return RevokeOutcome(node_id=node_id, existed=True, already_revoked=True)
+                await db.execute(
+                    "UPDATE edge_node SET revoked_at=? WHERE node_id=?",
+                    (observed.isoformat(), node_id),
+                )
+                # Fail-closed: cancel every active lease held by this node so the
+                # job returns to the queue and no completion can be accepted.
+                await db.execute(
+                    "UPDATE edge_job SET status='queued',node_id=NULL,lease_id=NULL,lease_expires_at=NULL "
+                    "WHERE status='leased' AND node_id=?",
+                    (node_id,),
+                )
+                await db.execute(
+                    "INSERT INTO edge_fleet_audit(event,node_id,actor,detail,occurred_at) "
+                    "VALUES(?,?,?,?,?)",
+                    ("node.revoked", node_id, actor, "node identity revoked and leases cancelled", observed.isoformat()),
+                )
+                await db.commit()
+                return RevokeOutcome(node_id=node_id, existed=True, already_revoked=False)
+            except BaseException:
+                await db.rollback()
+                raise
 
     async def authenticate_request(
         self,
@@ -338,10 +463,16 @@ class EdgeFleet:
             message = "edge request identity, method, path, or nonce is invalid"
             raise EdgeFleetError(message)
         row = await (
-            await self._required_db().execute("SELECT public_key FROM edge_node WHERE node_id=?", (node_id,))
+            await self._required_db().execute(
+                "SELECT public_key,revoked_at FROM edge_node WHERE node_id=?",
+                (node_id,),
+            )
         ).fetchone()
         if row is None:
             message = "edge node is not enrolled"
+            raise EdgeFleetError(message)
+        if row[1] is not None:
+            message = "edge node identity is revoked"
             raise EdgeFleetError(message)
         payload = node_request_attestation_payload(
             node_id=node_id,
@@ -371,7 +502,7 @@ class EdgeFleet:
         rows = await (
             await self._required_db().execute(
                 "SELECT node_id,runtime,public_key,capabilities_json,last_seen_at FROM edge_node "
-                "WHERE last_seen_at>=? ORDER BY node_id",
+                "WHERE last_seen_at>=? AND revoked_at IS NULL ORDER BY node_id",
                 (cutoff.isoformat(),),
             )
         ).fetchall()
@@ -470,12 +601,15 @@ class EdgeFleet:
                 )
                 node_row = await (
                     await db.execute(
-                        "SELECT runtime,capabilities_json FROM edge_node WHERE node_id=?",
+                        "SELECT runtime,capabilities_json,revoked_at FROM edge_node WHERE node_id=?",
                         (node_id,),
                     )
                 ).fetchone()
                 if node_row is None:
                     message = "edge node is not enrolled"
+                    raise EdgeFleetError(message)
+                if node_row[2] is not None:
+                    message = "edge node identity is revoked"
                     raise EdgeFleetError(message)
                 capabilities = set(json.loads(node_row[1]))
                 rows = await (
@@ -517,12 +651,15 @@ class EdgeFleet:
         observed = _utc(observed_at)
         row = await (
             await self._required_db().execute(
-                "SELECT public_key FROM edge_node WHERE node_id=?",
+                "SELECT public_key,revoked_at FROM edge_node WHERE node_id=?",
                 (lease.node_id,),
             )
         ).fetchone()
         if row is None or observed > lease.expires_at:
             message = "edge result identity or lease expiry is invalid"
+            raise EdgeFleetError(message)
+        if row[1] is not None:
+            message = "edge node identity is revoked"
             raise EdgeFleetError(message)
         result_json = _json(result)
         attestation = _result_attestation(lease.job_id, lease.lease_id, result_json)
