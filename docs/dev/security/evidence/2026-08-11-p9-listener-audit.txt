@@ -1,0 +1,16 @@
+# P9 listener audit — 2026-08-10T17:26Z
+
+## lsof TCP LISTEN port 8765:
+COMMAND   PID   USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+python3.1 541 dwayne   12u  IPv4 0x631fa932a0978509      0t0  TCP 127.0.0.1:8765 (LISTEN)
+
+## wildcard 8765 check (must be empty):
+(none)
+
+## tailscale serve status:
+https://macbook-pro-2.tail9e4b21.ts.net:18123 (tailnet only)
+|-- / proxy http://localhost:8123
+
+
+## api health via loopback:
+{"status":"healthy","last_sync_time":"2026-08-10T17:26:02.959345+00:00","e2ee":{"decrypt_failures":0,"key_requests_sent"
