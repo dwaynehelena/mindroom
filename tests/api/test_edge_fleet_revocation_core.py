@@ -247,3 +247,61 @@ async def test_audit_and_revocation_are_same_transaction(fleet) -> None:
 async def test_revocation_rejects_blank_node_id(fleet) -> None:
     with pytest.raises(EdgeFleetError, match="blank"):
         await fleet.revoke_node("", observed_at=NOW, actor="admin-1")
+
+
+# ---------------------------------------------------------------------------
+# Schema migration for pre-existing databases
+# ---------------------------------------------------------------------------
+
+async def test_open_migrates_pre_revocation_database(tmp_path) -> None:
+    """A database created before revocation support gains the new schema."""
+    authority = EnrollmentAuthority(b"e" * 32)
+    path = tmp_path / "legacy.db"
+    # Create a legacy database without the revoked_at column or audit table.
+    import aiosqlite
+
+    db = await aiosqlite.connect(path)
+    await db.executescript(
+        """
+        CREATE TABLE edge_node (
+          node_id TEXT PRIMARY KEY,
+          runtime TEXT NOT NULL,
+          public_key TEXT NOT NULL,
+          capabilities_json TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL
+        );
+        CREATE TABLE edge_job (
+          job_id TEXT PRIMARY KEY,
+          runtime TEXT NOT NULL,
+          required_capabilities_json TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          status TEXT NOT NULL,
+          node_id TEXT,
+          lease_id TEXT,
+          lease_expires_at TEXT,
+          result_json TEXT,
+          result_signature TEXT
+        );
+        """
+    )
+    await db.commit()
+    await db.close()
+
+    fleet = EdgeFleet(path, authority, node_allowlist=frozenset({"node-1"}))
+    await fleet.open()
+    try:
+        # The revoked_at column and audit table now exist.
+        node_row = await (
+            await fleet._db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='edge_node'")
+        ).fetchone()
+        assert "revoked_at" in str(node_row[0])
+        audit = await (
+            await fleet._db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='edge_fleet_audit'")
+        ).fetchone()
+        assert audit is not None
+        # Revocation works on the migrated database.
+        await _enroll(fleet, "node-1")
+        outcome = await fleet.revoke_node("node-1", observed_at=NOW, actor="admin-1")
+        assert outcome.existed is True
+    finally:
+        await fleet.close()

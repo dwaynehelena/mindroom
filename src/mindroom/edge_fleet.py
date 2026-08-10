@@ -240,7 +240,7 @@ class EdgeFleet:
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='edge_node'",
             )
         ).fetchone()
-        if node_row is None or "'revoked_at'" not in str(node_row[0]):
+        if node_row is None or "revoked_at" not in str(node_row[0]):
             try:
                 await self._required_db().execute("ALTER TABLE edge_node ADD COLUMN revoked_at TEXT")
             except Exception:  # noqa: BLE001 - column may already exist from a concurrent writer
