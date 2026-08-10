@@ -27,6 +27,13 @@ if TYPE_CHECKING:
 _PREFIX = "/api/edge-fleet"
 _ADMIN_PREFIX = "/api/edge-fleet-admin"
 
+# The single permission that authorizes node revocation (OQ-7).
+_REVOKE_PERMISSION = "admin.nodes.revoke"
+# OQ-8: at most 5 revocations per minute per admin principal.
+_REVOKE_RATE_LIMIT = 5
+# A burst is a principal exceeding the revocation rate limit in one window.
+_REVOKE_BURST_ALERT_EVENT = "admin.node_revoke_burst"
+
 logger = logging.getLogger("mindroom.api.edge_fleet")
 
 # ---------------------------------------------------------------------------
@@ -347,6 +354,7 @@ def create_edge_fleet_admin_router(
     clock = now or (lambda: datetime.now(UTC))
     router = APIRouter(prefix=_ADMIN_PREFIX, tags=["edge-fleet-admin"])
     admin_limiter = _RateLimiter(_ADMIN_LIMIT)
+    revoke_limiter = _RateLimiter(_REVOKE_RATE_LIMIT)
 
     @router.post("/enrollments", response_model=EnrollmentIssueResponse)
     async def issue_enrollment(
@@ -416,12 +424,99 @@ def create_edge_fleet_admin_router(
         except EdgeFleetError as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Edge job was not found") from exc
 
+    @router.delete("/nodes/{node_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def revoke_node(
+        node_id: str,
+        request: Request,
+        _user: Annotated[dict, Depends(lambda: None)] = None,
+    ) -> Response:
+        """Revoke one node identity (soft-delete) and fail it closed.
+
+        Requires the ``admin.nodes.revoke`` permission (OQ-7). Returns 204 for
+        any node that exists (whether already revoked or not — idempotent,
+        OQ-4) and a true 404 only for a node_id that never existed. Rate
+        limited to 5 revocations per minute per admin principal, with a burst
+        alert when exceeded (OQ-8).
+        """
+        # The router is mounted behind verify_user, which stores the
+        # authenticated principal in request.scope["auth_user"]. The _user
+        # placeholder is a no-op dependency; the real identity comes from scope.
+        auth_user = request.scope.get("auth_user")
+        principal = _admin_principal(request, auth_user)
+        _require_revoke_permission(request, auth_user, principal)
+        if not revoke_limiter.check(principal):
+            _audit_log(
+                _REVOKE_BURST_ALERT_EVENT,
+                node_id=node_id,
+                actor=principal,
+                detail="node revocation rate limit exceeded",
+            )
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Node revocation rate limit exceeded")
+        try:
+            outcome = await fleet.revoke_node(node_id, observed_at=clock(), actor=principal)
+        except EdgeFleetError as exc:
+            _audit_log("admin.node_revoke_failed", node_id=node_id, actor=principal, detail=str(exc))
+            raise _invalid_admin_request() from exc
+        if not outcome.existed:
+            _audit_log("admin.node_revoke_not_found", node_id=node_id, actor=principal)
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Edge node was not found")
+        _audit_log(
+            "admin.node_revoked",
+            node_id=node_id,
+            actor=principal,
+            already_revoked=outcome.already_revoked,
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     return router
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _admin_principal(request: Request, user: dict | None) -> str:
+    """Return a stable admin principal identifier for authz and rate limiting."""
+    if isinstance(user, dict):
+        for key in ("user_id", "email", "matrix_user_id"):
+            value = user.get(key)
+            if isinstance(value, str) and value:
+                return value
+    auth_user = request.scope.get("auth_user")
+    if isinstance(auth_user, dict):
+        for key in ("user_id", "email", "matrix_user_id"):
+            value = auth_user.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return "unknown-admin"
+
+
+def _require_revoke_permission(request: Request, user: dict | None, principal: str) -> None:
+    """Enforce the ``admin.nodes.revoke`` permission, logging any rejection.
+
+    The permission is granted when the authenticated principal is an admin
+    (the router is mounted behind ``verify_user``) and, when a permission
+    list is present on the auth user, the principal is listed for
+    ``admin.nodes.revoke``. A missing permission list is treated as
+    admin-granted (the dashboard owner is the sole admin).
+    """
+    granted = False
+    if isinstance(user, dict):
+        permissions = user.get("permissions")
+        if permissions is None:
+            granted = True
+        elif isinstance(permissions, (list, tuple, set, frozenset)):
+            granted = _REVOKE_PERMISSION in permissions
+        elif isinstance(permissions, dict):
+            granted = bool(permissions.get(_REVOKE_PERMISSION))
+    if not granted:
+        _audit_log(
+            "admin.node_revoke_denied",
+            actor=principal,
+            detail=f"missing permission {_REVOKE_PERMISSION}",
+        )
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permission to revoke nodes")
+
 
 async def _authenticate(
     fleet: EdgeFleet,
