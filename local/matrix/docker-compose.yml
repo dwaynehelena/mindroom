@@ -50,7 +50,24 @@ services:
       timeout: 10s
       retries: 5
 
+  telegram-bridge:
+    image: dock.mau.dev/mautrix/telegram:latest
+    container_name: mindroom-telegram-bridge
+    restart: unless-stopped
+    environment:
+      UID: "1337"
+      GID: "1337"
+      BRIDGEV2: "1"
+    volumes:
+      - /Users/dwayne/.mindroom/telegram-bridge:/data
+      - tgbridge_db:/db
+    depends_on:
+      synapse:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   redis_data:
   synapse_media:
+  tgbridge_db:
+    name: matrix_tgbridge_db

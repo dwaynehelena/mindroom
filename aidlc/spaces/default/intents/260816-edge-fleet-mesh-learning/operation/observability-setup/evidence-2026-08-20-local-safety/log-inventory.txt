@@ -1,0 +1,4 @@
+stderr=/Users/dwayne/Library/Logs/mindroom/stderr.log size=11832891 mtime=2026-08-20T20:33:05.134475+00:00
+stdout=/Users/dwayne/Library/Logs/mindroom/stdout.log size=3315643 mtime=2026-08-20T20:33:05.499398+00:00
+storage_logs_dir=/Users/dwayne/.mindroom/mindroom_data/logs count=205
+current_process_log=/Users/dwayne/.mindroom/mindroom_data/logs/mindroom_20260820_202141.log size=202620 mtime=2026-08-20T20:33:05.134964+00:00

@@ -1,0 +1,797 @@
+{
+  "workflow_id": "2026-08-16T03:15:45Z",
+  "scope": "edge-fleet-mesh-learning-activation",
+  "started_at": "2026-08-16T03:15:45Z",
+  "stages": [
+    {
+      "stage_slug": "workspace-scaffold",
+      "started_at": "2026-08-16T03:15:45Z",
+      "completed_at": "2026-08-16T03:15:45Z",
+      "agent": "orchestrator",
+      "memory_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/initialization/workspace-scaffold/memory.md",
+      "memory_entries": null,
+      "memory_breakdown": null,
+      "sensor_firings": [],
+      "outcome": "approved",
+      "learnings_captured": {
+        "from_orchestrator": 0,
+        "from_user_addition": 0
+      }
+    },
+    {
+      "stage_slug": "workspace-detection",
+      "started_at": "2026-08-16T03:15:45Z",
+      "completed_at": "2026-08-16T03:15:45Z",
+      "agent": "orchestrator",
+      "memory_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/initialization/workspace-detection/memory.md",
+      "memory_entries": null,
+      "memory_breakdown": null,
+      "sensor_firings": [],
+      "outcome": "approved",
+      "learnings_captured": {
+        "from_orchestrator": 0,
+        "from_user_addition": 0
+      }
+    },
+    {
+      "stage_slug": "state-init",
+      "started_at": "2026-08-16T03:15:45Z",
+      "completed_at": "2026-08-16T03:15:45Z",
+      "agent": "orchestrator",
+      "memory_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/initialization/state-init/memory.md",
+      "memory_entries": null,
+      "memory_breakdown": null,
+      "sensor_firings": [],
+      "outcome": "approved",
+      "learnings_captured": {
+        "from_orchestrator": 0,
+        "from_user_addition": 0
+      }
+    },
+    {
+      "stage_slug": "intent-capture",
+      "started_at": "2026-08-16T03:15:45Z",
+      "completed_at": "2026-08-16T07:13:07Z",
+      "agent": "aidlc-product-agent",
+      "memory_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/ideation/intent-capture/memory.md",
+      "memory_entries": 5,
+      "memory_breakdown": {
+        "interpretations": 2,
+        "deviations": 1,
+        "tradeoffs": 0,
+        "open_questions": 2
+      },
+      "sensor_firings": [
+        {
+          "id": "claim-sources",
+          "fire_id": "8e36a7c5",
+          "result": "passed",
+          "ts": "2026-08-16T03:18:11Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "f4b166b0",
+          "result": "passed",
+          "ts": "2026-08-16T03:18:11Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "761409af",
+          "result": "passed",
+          "ts": "2026-08-16T03:18:11Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "5a7f6fad",
+          "result": "passed",
+          "ts": "2026-08-16T03:38:48Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "73553442",
+          "result": "passed",
+          "ts": "2026-08-16T03:38:48Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "a5101629",
+          "result": "passed",
+          "ts": "2026-08-16T03:38:48Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "672c305e",
+          "result": "passed",
+          "ts": "2026-08-16T03:38:51Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "359167eb",
+          "result": "passed",
+          "ts": "2026-08-16T03:38:52Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "16d7118e",
+          "result": "passed",
+          "ts": "2026-08-16T03:38:52Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "9359f16f",
+          "result": "passed",
+          "ts": "2026-08-16T03:38:55Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "619c983e",
+          "result": "passed",
+          "ts": "2026-08-16T03:38:55Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "7a3996c2",
+          "result": "passed",
+          "ts": "2026-08-16T03:38:55Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "e2ea2e09",
+          "result": "passed",
+          "ts": "2026-08-16T03:38:59Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "b6dfa7ec",
+          "result": "passed",
+          "ts": "2026-08-16T03:38:59Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "4dc04f05",
+          "result": "passed",
+          "ts": "2026-08-16T03:38:59Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "94a07e42",
+          "result": "passed",
+          "ts": "2026-08-16T03:39:25Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "f1ee241f",
+          "result": "passed",
+          "ts": "2026-08-16T03:39:25Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "d7e49bf8",
+          "result": "passed",
+          "ts": "2026-08-16T03:39:25Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "784e493f",
+          "result": "passed",
+          "ts": "2026-08-16T03:39:28Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "55c9caa1",
+          "result": "passed",
+          "ts": "2026-08-16T03:39:28Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "57609f0e",
+          "result": "passed",
+          "ts": "2026-08-16T03:39:29Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "31c7135e",
+          "result": "passed",
+          "ts": "2026-08-16T03:39:31Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "82e2099a",
+          "result": "passed",
+          "ts": "2026-08-16T03:39:32Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "c24d8bef",
+          "result": "passed",
+          "ts": "2026-08-16T03:39:32Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "940ca4b2",
+          "result": "passed",
+          "ts": "2026-08-16T03:39:35Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "49a287f6",
+          "result": "passed",
+          "ts": "2026-08-16T03:39:35Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "7b0b5eba",
+          "result": "passed",
+          "ts": "2026-08-16T03:39:35Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "320db6f4",
+          "result": "passed",
+          "ts": "2026-08-16T04:47:35Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "2a0eea02",
+          "result": "passed",
+          "ts": "2026-08-16T04:47:36Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "defcb475",
+          "result": "passed",
+          "ts": "2026-08-16T04:47:36Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "ab139734",
+          "result": "passed",
+          "ts": "2026-08-16T04:47:39Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "4e4a9d05",
+          "result": "passed",
+          "ts": "2026-08-16T04:47:39Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "815975ec",
+          "result": "passed",
+          "ts": "2026-08-16T04:47:40Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "18168447",
+          "result": "passed",
+          "ts": "2026-08-16T04:47:43Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "bc872421",
+          "result": "passed",
+          "ts": "2026-08-16T04:47:43Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "a757d1bd",
+          "result": "passed",
+          "ts": "2026-08-16T04:47:43Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "e6025419",
+          "result": "passed",
+          "ts": "2026-08-16T04:47:47Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "391a00ae",
+          "result": "passed",
+          "ts": "2026-08-16T04:47:47Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "cbdefcc1",
+          "result": "passed",
+          "ts": "2026-08-16T04:47:47Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "e9a573f8",
+          "result": "passed",
+          "ts": "2026-08-16T04:48:17Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "58b98894",
+          "result": "passed",
+          "ts": "2026-08-16T04:48:17Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "0076820a",
+          "result": "passed",
+          "ts": "2026-08-16T04:48:17Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "a0ff1b3e",
+          "result": "passed",
+          "ts": "2026-08-16T07:07:54Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "47da36dc",
+          "result": "passed",
+          "ts": "2026-08-16T07:07:54Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "2cf299da",
+          "result": "passed",
+          "ts": "2026-08-16T07:07:55Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "4ff90072",
+          "result": "passed",
+          "ts": "2026-08-16T07:07:59Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "235a8a78",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:00Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "c1055114",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:00Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "3000b7c2",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:15Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "6b8bf6f1",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:15Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "9b5ed5d5",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:15Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "7e27ba84",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:21Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "1bbfb770",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:22Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "2f8d56dd",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:22Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "4bdf55c8",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:29Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "03a30431",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:29Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "ad50b566",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:29Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "469cd257",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:41Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "1d925008",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:42Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "b77644aa",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:42Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "855eb3b4",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:56Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "a95b516b",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:57Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "4973787a",
+          "result": "passed",
+          "ts": "2026-08-16T07:08:57Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "97a4fe83",
+          "result": "failed",
+          "ts": "2026-08-16T07:09:25Z",
+          "detail_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/.aidlc-sensors/intent-capture/claim-sources-97a4fe83.md"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "b3751b13",
+          "result": "passed",
+          "ts": "2026-08-16T07:09:25Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "52e10b97",
+          "result": "passed",
+          "ts": "2026-08-16T07:09:25Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "999ee316",
+          "result": "failed",
+          "ts": "2026-08-16T07:09:37Z",
+          "detail_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/.aidlc-sensors/intent-capture/claim-sources-999ee316.md"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "de746900",
+          "result": "passed",
+          "ts": "2026-08-16T07:09:37Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "b7576a6a",
+          "result": "passed",
+          "ts": "2026-08-16T07:09:37Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "0b00f5af",
+          "result": "failed",
+          "ts": "2026-08-16T07:09:48Z",
+          "detail_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/.aidlc-sensors/intent-capture/claim-sources-0b00f5af.md"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "a69b0257",
+          "result": "passed",
+          "ts": "2026-08-16T07:09:48Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "82f46e71",
+          "result": "passed",
+          "ts": "2026-08-16T07:09:48Z"
+        },
+        {
+          "id": "claim-sources",
+          "fire_id": "c6cc2340",
+          "result": "failed",
+          "ts": "2026-08-16T07:12:00Z",
+          "detail_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/.aidlc-sensors/intent-capture/claim-sources-c6cc2340.md"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "7d72a757",
+          "result": "passed",
+          "ts": "2026-08-16T07:12:00Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "5ffb05c4",
+          "result": "passed",
+          "ts": "2026-08-16T07:12:00Z"
+        }
+      ],
+      "outcome": "approved",
+      "learnings_captured": {
+        "from_orchestrator": 0,
+        "from_user_addition": 0
+      }
+    },
+    {
+      "stage_slug": "feasibility",
+      "started_at": "2026-08-16T07:13:07Z",
+      "completed_at": "2026-08-16T09:33:56Z",
+      "agent": "aidlc-architect-agent",
+      "memory_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/ideation/feasibility/memory.md",
+      "memory_entries": 8,
+      "memory_breakdown": {
+        "interpretations": 2,
+        "deviations": 2,
+        "tradeoffs": 2,
+        "open_questions": 2
+      },
+      "sensor_firings": [
+        {
+          "id": "required-sections",
+          "fire_id": "db91965a",
+          "result": "passed",
+          "ts": "2026-08-16T07:14:03Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "72d8698f",
+          "result": "passed",
+          "ts": "2026-08-16T07:14:03Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "68fc5d3c",
+          "result": "passed",
+          "ts": "2026-08-16T07:15:15Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "d9306ccc",
+          "result": "passed",
+          "ts": "2026-08-16T07:15:15Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "6f7a09c1",
+          "result": "passed",
+          "ts": "2026-08-16T07:34:16Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "a458e8a0",
+          "result": "passed",
+          "ts": "2026-08-16T07:34:16Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "1d15e811",
+          "result": "passed",
+          "ts": "2026-08-16T07:41:47Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "a49ab4a6",
+          "result": "passed",
+          "ts": "2026-08-16T07:41:47Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "ad378126",
+          "result": "passed",
+          "ts": "2026-08-16T07:57:48Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "6813a0bf",
+          "result": "passed",
+          "ts": "2026-08-16T07:57:48Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "e049b846",
+          "result": "passed",
+          "ts": "2026-08-16T07:58:15Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "1bc92754",
+          "result": "passed",
+          "ts": "2026-08-16T07:58:15Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "01c574ea",
+          "result": "passed",
+          "ts": "2026-08-16T07:58:53Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "4268b8b4",
+          "result": "passed",
+          "ts": "2026-08-16T07:58:53Z"
+        },
+        {
+          "id": "required-sections",
+          "fire_id": "822f0573",
+          "result": "passed",
+          "ts": "2026-08-16T07:59:14Z"
+        },
+        {
+          "id": "upstream-coverage",
+          "fire_id": "87fc0aa4",
+          "result": "passed",
+          "ts": "2026-08-16T07:59:14Z"
+        }
+      ],
+      "outcome": "approved",
+      "learnings_captured": {
+        "from_orchestrator": 0,
+        "from_user_addition": 0
+      }
+    },
+    {
+      "stage_slug": "scope-definition",
+      "started_at": "2026-08-16T09:33:56Z",
+      "completed_at": "2026-08-16T11:34:41Z",
+      "agent": "aidlc-product-agent",
+      "memory_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/ideation/scope-definition/memory.md",
+      "memory_entries": 9,
+      "memory_breakdown": {
+        "interpretations": 2,
+        "deviations": 2,
+        "tradeoffs": 5,
+        "open_questions": 0
+      },
+      "sensor_firings": [],
+      "outcome": "approved",
+      "learnings_captured": {
+        "from_orchestrator": 3,
+        "from_user_addition": 0
+      }
+    },
+    {
+      "stage_slug": "approval-handoff",
+      "started_at": "2026-08-16T11:34:41Z",
+      "completed_at": "2026-08-16T12:57:35Z",
+      "agent": "aidlc-delivery-agent",
+      "memory_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/ideation/approval-handoff/memory.md",
+      "memory_entries": 5,
+      "memory_breakdown": {
+        "interpretations": 2,
+        "deviations": 2,
+        "tradeoffs": 1,
+        "open_questions": 0
+      },
+      "sensor_firings": [],
+      "outcome": "approved",
+      "learnings_captured": {
+        "from_orchestrator": 2,
+        "from_user_addition": 0
+      }
+    },
+    {
+      "stage_slug": "reverse-engineering",
+      "started_at": "2026-08-16T12:57:35Z",
+      "completed_at": "2026-08-16T13:21:31Z",
+      "agent": "aidlc-developer-agent",
+      "memory_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/inception/reverse-engineering/memory.md",
+      "memory_entries": 4,
+      "memory_breakdown": {
+        "interpretations": 1,
+        "deviations": 1,
+        "tradeoffs": 1,
+        "open_questions": 1
+      },
+      "sensor_firings": [],
+      "outcome": "approved",
+      "learnings_captured": {
+        "from_orchestrator": 2,
+        "from_user_addition": 0
+      }
+    },
+    {
+      "stage_slug": "requirements-analysis",
+      "started_at": "2026-08-16T13:21:31Z",
+      "completed_at": "2026-08-16T18:01:14Z",
+      "agent": "aidlc-product-agent",
+      "memory_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/inception/requirements-analysis/memory.md",
+      "memory_entries": 4,
+      "memory_breakdown": {
+        "interpretations": 2,
+        "deviations": 1,
+        "tradeoffs": 1,
+        "open_questions": 0
+      },
+      "sensor_firings": [],
+      "outcome": "approved",
+      "learnings_captured": {
+        "from_orchestrator": 0,
+        "from_user_addition": 0
+      }
+    },
+    {
+      "stage_slug": "domain-design",
+      "started_at": "2026-08-16T18:01:14Z",
+      "completed_at": "2026-08-16T21:16:28Z",
+      "agent": "aidlc-architect-agent",
+      "memory_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/inception/domain-design/memory.md",
+      "memory_entries": 3,
+      "memory_breakdown": {
+        "interpretations": 2,
+        "deviations": 1,
+        "tradeoffs": 0,
+        "open_questions": 0
+      },
+      "sensor_firings": [],
+      "outcome": "approved",
+      "learnings_captured": {
+        "from_orchestrator": 0,
+        "from_user_addition": 0
+      }
+    },
+    {
+      "stage_slug": "units-generation",
+      "started_at": "2026-08-16T21:16:28Z",
+      "completed_at": null,
+      "agent": "aidlc-architect-agent",
+      "memory_path": "aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/inception/units-generation/memory.md",
+      "memory_entries": 2,
+      "memory_breakdown": {
+        "interpretations": 2,
+        "deviations": 0,
+        "tradeoffs": 0,
+        "open_questions": 0
+      },
+      "sensor_firings": [],
+      "outcome": "pending",
+      "learnings_captured": null
+    }
+  ],
+  "bolt_dag": {
+    "units": [
+      {
+        "name": "fleet-hygiene",
+        "depends_on": [],
+        "kind": "service"
+      },
+      {
+        "name": "live-fleet",
+        "depends_on": [
+          "fleet-hygiene"
+        ],
+        "kind": "service"
+      },
+      {
+        "name": "learning-promotion",
+        "depends_on": [],
+        "kind": "library"
+      },
+      {
+        "name": "handshake",
+        "depends_on": [],
+        "kind": "library"
+      }
+    ],
+    "batches": [
+      [
+        "fleet-hygiene",
+        "handshake",
+        "learning-promotion"
+      ],
+      [
+        "live-fleet"
+      ]
+    ]
+  }
+}

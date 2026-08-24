@@ -1,0 +1,7 @@
+HTTP 200
+elapsed_ms 42.16
+date: Thu, 20 Aug 2026 20:51:50 GMT
+server: uvicorn
+content-length: 244
+content-type: application/json
+connection: close

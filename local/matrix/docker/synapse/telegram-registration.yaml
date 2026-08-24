@@ -1,0 +1,14 @@
+id: telegram
+url: http://mindroom-telegram-bridge:29317
+as_token: ilk4d8iqafM38BsySEdyElkL1FPwVpKNlvY74iIEd1MObjwmqL2HTGRFkxyuPpS7
+hs_token: vrCOQAtvNJujtUE1nXi3OTkkpWKEM3a0RZst4y5BAA44T5B0qyqz9RRIdmXjMkXn
+sender_localpart: 8tRY5NqVd5VPDZG82BmzCO9CZZlaT8T8
+rate_limited: false
+namespaces:
+    users:
+        - regex: ^@telegrambot:localhost$
+          exclusive: true
+        - regex: ^@telegram_.*:localhost$
+          exclusive: true
+de.sorunome.msc2409.push_ephemeral: true
+receive_ephemeral: true

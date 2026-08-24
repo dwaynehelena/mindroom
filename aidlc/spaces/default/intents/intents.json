@@ -1,0 +1,12 @@
+[
+  {
+    "uuid": "01a00891-7514-76c4-a723-3588ecbba8e8",
+    "slug": "edge-fleet-mesh-learning",
+    "dirName": "260816-edge-fleet-mesh-learning",
+    "scope": "edge-fleet-mesh-learning-activation",
+    "repos": [
+      "mindroom"
+    ],
+    "status": "in-flight"
+  }
+]

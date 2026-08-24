@@ -1,0 +1,29 @@
+{
+  "stage_slug": "scope-definition",
+  "selections": [
+    {
+      "candidate_id": "c3",
+      "type": "learning",
+      "scope": "project",
+      "heading": "## Corrections",
+      "source": "orchestrator",
+      "text": "ALWAYS skip a stage's suggested deadline question when a prior confirmed answer already recorded that there is no deadline"
+    },
+    {
+      "candidate_id": "c4",
+      "type": "learning",
+      "scope": "project",
+      "heading": "## Corrections",
+      "source": "orchestrator",
+      "text": "ALWAYS treat the constraint register as settled at Scope Definition; do not re-ask local-vs-hosted, network reach, authentication, rollback shape, or test-floor questions already recorded there"
+    },
+    {
+      "candidate_id": "c7",
+      "type": "learning",
+      "scope": "project",
+      "heading": "## Corrections",
+      "source": "orchestrator",
+      "text": "ALWAYS supersede a prior artifact's stance in the current stage document rather than editing the already-approved upstream artifact"
+    }
+  ]
+}

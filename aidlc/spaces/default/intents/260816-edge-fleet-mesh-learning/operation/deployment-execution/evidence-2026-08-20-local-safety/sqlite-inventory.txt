@@ -1,0 +1,13 @@
+ok
+wal
+edge_enrollment_nonce
+edge_fleet_audit
+edge_job
+edge_node
+edge_request_nonce
+sqlite_sequence
+edge_node|10
+edge_job|6
+edge_enrollment_nonce|19
+edge_request_nonce|24
+edge_fleet_audit|0

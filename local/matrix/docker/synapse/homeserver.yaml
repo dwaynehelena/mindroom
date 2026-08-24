@@ -150,6 +150,9 @@ rc_room_creation:
 # Federation read-receipt transactions
 federation_rr_transactions_per_room_per_second: 10000
 
+app_service_config_files:
+  - /data/telegram-registration.yaml
+
 # Security
 macaroon_secret_key: "mindroom_dev_secret_change_in_production"
 form_secret: "mindroom_form_secret_change_in_production"

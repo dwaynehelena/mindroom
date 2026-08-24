@@ -1,0 +1,194 @@
+{
+  "Version": "1.96.5-t4ee448d3a-g74ffbefc2",
+  "TUN": true,
+  "BackendState": "Running",
+  "HaveNodeKey": true,
+  "AuthURL": "",
+  "TailscaleIPs": [
+    "100.80.168.13",
+    "fd7a:115c:a1e0::b839:a80e"
+  ],
+  "Self": {
+    "ID": "nLWCrQJb1721CNTRL",
+    "PublicKey": "nodekey:b393b56442934c08aa5cbb35efda4dbbceaf7b395aa585157c633bf8b850a80d",
+    "HostName": "macbook-pro-3",
+    "DNSName": "macbook-pro-3.tail9e4b21.ts.net.",
+    "OS": "macOS",
+    "UserID": 4961195173990132,
+    "TailscaleIPs": [
+      "100.80.168.13",
+      "fd7a:115c:a1e0::b839:a80e"
+    ],
+    "AllowedIPs": [
+      "100.80.168.13/32",
+      "fd7a:115c:a1e0::b839:a80e/128"
+    ],
+    "Addrs": [
+      "115.70.50.75:29794",
+      "192.168.68.79:41641"
+    ],
+    "CurAddr": "",
+    "Relay": "syd",
+    "PeerRelay": "",
+    "RxBytes": 0,
+    "TxBytes": 0,
+    "Created": "2026-07-19T10:52:59.930905171Z",
+    "LastWrite": "0001-01-01T00:00:00Z",
+    "LastSeen": "0001-01-01T00:00:00Z",
+    "LastHandshake": "0001-01-01T00:00:00Z",
+    "Online": true,
+    "ExitNode": false,
+    "ExitNodeOption": false,
+    "Active": false,
+    "PeerAPIURL": [
+      "http://100.80.168.13:48638",
+      "http://[fd7a:115c:a1e0::b839:a80e]:40171"
+    ],
+    "TaildropTarget": 0,
+    "NoFileSharingReason": "",
+    "Capabilities": [
+      "HTTPS://TAILSCALE.COM/s/DEPRECATED-NODE-CAPS#see-https://github.com/tailscale/tailscale/issues/11508",
+      "default-auto-update",
+      "funnel",
+      "https",
+      "https://tailscale.com/cap/file-sharing",
+      "https://tailscale.com/cap/funnel-ports?ports=443,8443,10000",
+      "https://tailscale.com/cap/is-admin",
+      "https://tailscale.com/cap/is-owner",
+      "https://tailscale.com/cap/mac-ui-v2",
+      "https://tailscale.com/cap/ssh",
+      "https://tailscale.com/cap/tailnet-lock",
+      "probe-udp-lifetime",
+      "ssh-behavior-v1",
+      "ssh-env-vars",
+      "store-appc-routes",
+      "tailnet-display-name"
+    ],
+    "CapMap": {
+      "default-auto-update": [
+        true
+      ],
+      "funnel": null,
+      "https": null,
+      "https://tailscale.com/cap/file-sharing": null,
+      "https://tailscale.com/cap/funnel-ports?ports=443,8443,10000": null,
+      "https://tailscale.com/cap/is-admin": null,
+      "https://tailscale.com/cap/is-owner": null,
+      "https://tailscale.com/cap/mac-ui-v2": null,
+      "https://tailscale.com/cap/ssh": null,
+      "https://tailscale.com/cap/tailnet-lock": null,
+      "probe-udp-lifetime": null,
+      "ssh-behavior-v1": null,
+      "ssh-env-vars": null,
+      "store-appc-routes": null,
+      "tailnet-display-name": [
+        "dwaynehelena@gmail.com"
+      ]
+    },
+    "InNetworkMap": true,
+    "InMagicSock": false,
+    "InEngine": false,
+    "KeyExpiry": "2027-01-15T10:52:59Z"
+  },
+  "Health": [],
+  "MagicDNSSuffix": "tail9e4b21.ts.net",
+  "CurrentTailnet": {
+    "Name": "dwaynehelena@gmail.com",
+    "MagicDNSSuffix": "tail9e4b21.ts.net",
+    "MagicDNSEnabled": true
+  },
+  "CertDomains": [
+    "macbook-pro-3.tail9e4b21.ts.net"
+  ],
+  "Peer": {
+    "nodekey:17b47fbf875a7057fac9d6c357ddae111768920165a0b482b4932954c193d639": {
+      "ID": "nUwaXskiK511CNTRL",
+      "PublicKey": "nodekey:17b47fbf875a7057fac9d6c357ddae111768920165a0b482b4932954c193d639",
+      "HostName": "localhost",
+      "DNSName": "iphone182.tail9e4b21.ts.net.",
+      "OS": "iOS",
+      "UserID": 4961195173990132,
+      "TailscaleIPs": [
+        "100.83.214.58",
+        "fd7a:115c:a1e0::c139:d63a"
+      ],
+      "AllowedIPs": [
+        "100.83.214.58/32",
+        "fd7a:115c:a1e0::c139:d63a/128"
+      ],
+      "Addrs": null,
+      "CurAddr": "192.168.68.121:41641",
+      "Relay": "syd",
+      "PeerRelay": "",
+      "RxBytes": 0,
+      "TxBytes": 0,
+      "Created": "2026-03-08T01:59:04.947921938Z",
+      "LastWrite": "2026-08-21T20:48:23.600837814+10:00",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": false,
+      "Active": true,
+      "PeerAPIURL": [
+        "http://100.83.214.58:62160",
+        "http://[fd7a:115c:a1e0::c139:d63a]:48166"
+      ],
+      "TaildropTarget": 1,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "KeyExpiry": "2026-09-04T01:59:04Z"
+    },
+    "nodekey:e60cb9143ddd26ae57e9f6f541f1bf0393dd8561df874f80ff0663967d97d46e": {
+      "ID": "nqVz2ZBm9621CNTRL",
+      "PublicKey": "nodekey:e60cb9143ddd26ae57e9f6f541f1bf0393dd8561df874f80ff0663967d97d46e",
+      "HostName": "MacBook Pro",
+      "DNSName": "macbook-pro.tail9e4b21.ts.net.",
+      "OS": "macOS",
+      "UserID": 4961195173990132,
+      "TailscaleIPs": [
+        "100.87.212.111",
+        "fd7a:115c:a1e0::7d01:d4a4"
+      ],
+      "AllowedIPs": [
+        "100.87.212.111/32",
+        "fd7a:115c:a1e0::7d01:d4a4/128"
+      ],
+      "Addrs": null,
+      "CurAddr": "192.168.68.117:41641",
+      "Relay": "syd",
+      "PeerRelay": "",
+      "RxBytes": 9135172,
+      "TxBytes": 65609860,
+      "Created": "2026-03-06T11:39:29.413980235Z",
+      "LastWrite": "2026-08-21T20:48:39.255556831+10:00",
+      "LastSeen": "2026-08-21T08:30:00.1Z",
+      "LastHandshake": "2026-08-21T21:10:37.238915+10:00",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": false,
+      "Active": true,
+      "PeerAPIURL": [
+        "http://100.87.212.111:40437",
+        "http://[fd7a:115c:a1e0::7d01:d4a4]:54479"
+      ],
+      "TaildropTarget": 1,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": true,
+      "KeyExpiry": "2026-09-02T11:39:29Z"
+    }
+  },
+  "User": {
+    "4961195173990132": {
+      "ID": 4961195173990132,
+      "LoginName": "dwaynehelena@gmail.com",
+      "DisplayName": "Dwayne Helena",
+      "ProfilePicURL": "https://lh3.googleusercontent.com/a/ACg8ocL8ESNfSD6B04oBv9Rr1EPjfpJY2shQ9Y2X0Aixeak_GAZrdSW14A=s96-c"
+    }
+  },
+  "ClientVersion": null
+}

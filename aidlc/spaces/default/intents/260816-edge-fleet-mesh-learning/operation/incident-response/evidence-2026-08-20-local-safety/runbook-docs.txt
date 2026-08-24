@@ -1,0 +1,7 @@
+exists=True size=2514 /Users/dwayne/mindroom/docs/edge-fleet-rollback.md
+exists=True size=4105 /Users/dwayne/mindroom/docs/edge-fleet.md
+exists=True size=2880 /Users/dwayne/mindroom/aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/operation/deployment-pipeline/rollback-runbook.md
+exists=True size=3983 /Users/dwayne/mindroom/aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/operation/observability-setup/alarms.md
+exists=True size=4380 /Users/dwayne/mindroom/aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/operation/observability-setup/dashboards.md
+exists=True size=4724 /Users/dwayne/mindroom/aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/operation/observability-setup/log-queries.md
+exists=True size=3048 /Users/dwayne/mindroom/aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/operation/observability-setup/slo-config.md

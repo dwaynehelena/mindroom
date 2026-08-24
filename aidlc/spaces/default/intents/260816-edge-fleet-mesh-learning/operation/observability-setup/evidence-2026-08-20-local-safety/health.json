@@ -1,0 +1,14 @@
+{
+  "status": "healthy",
+  "last_sync_time": "2026-08-20T20:32:45.111022+00:00",
+  "e2ee": {
+    "decrypt_failures": 0,
+    "key_requests_sent": 0,
+    "notices_sent": 0
+  },
+  "edge_fleet": {
+    "enabled": true,
+    "healthy_nodes": 0,
+    "status": "Edge fleet is mounted with 0 healthy nodes."
+  }
+}

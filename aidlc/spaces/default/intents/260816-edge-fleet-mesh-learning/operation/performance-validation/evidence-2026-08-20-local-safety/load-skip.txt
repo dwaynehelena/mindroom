@@ -1,0 +1,23 @@
+did-not-run: k6 run ...
+did-not-run: locust -f ...
+did-not-run: wrk -t ... http://127.0.0.1:8765/api/health
+did-not-run: vegeta attack ...
+did-not-run: hey -n ... http://127.0.0.1:8765/api/health
+did-not-run: ab -n 1000 -c 10 http://127.0.0.1:8765/api/health
+did-not-run: aws cloudwatch get-metric-statistics
+did-not-run: aws xray ...
+did-not-run: terraform apply (perf infra)
+did-not-run: kubectl apply
+did-not-run: launchctl kickstart
+did-not-run: write ~/.mindroom/.env
+did-not-run: python -m mindroom.edge_node
+did-not-run: gh workflow run
+which k6=not-found (not invoked)
+which locust=not-found (not invoked)
+which wrk=not-found (not invoked)
+which vegeta=not-found (not invoked)
+which hey=not-found (not invoked)
+which ab=/usr/sbin/ab (present; NOT invoked against live host)
+which aws=not-found (not invoked)
+which kubectl=not-found (not invoked)
+which gh=/usr/local/bin/gh (not invoked)

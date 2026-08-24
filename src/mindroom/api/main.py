@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import threading
 from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import urlsplit
 
@@ -23,6 +26,7 @@ from mindroom.api.config_lifecycle import ApiSnapshot, ApiState, ConfigLoadResul
 # Import routers
 from mindroom.api.credentials import router as credentials_router
 from mindroom.api.dynamic_workflows import router as dynamic_workflows_router
+from mindroom.api.edge_fleet import create_edge_fleet_admin_router, create_edge_fleet_router
 from mindroom.api.external_triggers import router as external_triggers_router
 from mindroom.api.frontend import router as frontend_router
 from mindroom.api.homeassistant_integration import router as homeassistant_router
@@ -37,6 +41,7 @@ from mindroom.api.skills import router as skills_router
 from mindroom.api.tools import router as tools_router
 from mindroom.api.workers import router as workers_router
 from mindroom.credentials_sync import sync_env_to_credentials
+from mindroom.edge_fleet import EdgeFleet, EnrollmentAuthority
 from mindroom.embedder_health import get_embedder_failure
 from mindroom.knowledge import KnowledgeRefreshScheduler, reconcile_knowledge_mode_transition_states
 from mindroom.knowledge.watch import KnowledgeSourceWatcher
@@ -57,7 +62,6 @@ from mindroom.workers.runtime import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
-    from pathlib import Path
 
     from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -67,6 +71,13 @@ if TYPE_CHECKING:
     from mindroom.response_admission import ResponseAdmissionGate
 
 logger = get_logger(__name__)
+_EDGE_FLEET_ENABLED_ENV = "MINDROOM_EDGE_FLEET_ENABLED"
+_EDGE_FLEET_PATH_ENV = "MINDROOM_EDGE_FLEET_PATH"
+_EDGE_FLEET_ENROLLMENT_KEY_ENV = "MINDROOM_EDGE_FLEET_ENROLLMENT_KEY"
+_EDGE_FLEET_NODE_ALLOWLIST_ENV = "MINDROOM_EDGE_FLEET_NODE_ALLOWLIST"
+_EDGE_FLEET_HEALTH_MAX_AGE = timedelta(seconds=300)
+EDGE_FLEET_STATUS_UNMOUNTED = "Edge fleet is unmounted; production activation is not live."
+EDGE_FLEET_STATUS_ERROR = "Edge fleet is mounted but health is unavailable."
 _WORKER_CLEANUP_INTERVAL_ENV = "MINDROOM_WORKER_CLEANUP_INTERVAL_SECONDS"
 _DASHBOARD_CORS_ALLOWED_ORIGINS_ENV = "MINDROOM_DASHBOARD_CORS_ALLOWED_ORIGINS"
 _DASHBOARD_CORS_ALLOW_ALL_ORIGINS_ENV = "MINDROOM_DASHBOARD_CORS_ALLOW_ALL_ORIGINS"
@@ -81,6 +92,110 @@ _DEFAULT_DASHBOARD_CORS_ALLOWED_ORIGINS = (
     "http://127.0.0.1:3003",
     "http://127.0.0.1:5173",
 )
+
+
+def _edge_fleet_node_allowlist(runtime_paths: constants.RuntimePaths) -> frozenset[str] | None:
+    """Read the comma-separated enrollment allowlist env var, or None when unset.
+
+    ``None`` is fail-closed at the store: every enroll is denied (FR1.5).
+    """
+    raw = runtime_paths.env_value(_EDGE_FLEET_NODE_ALLOWLIST_ENV)
+    if not raw:
+        return None
+    entries = {entry.strip() for entry in raw.split(",") if entry.strip()}
+    return frozenset(entries) or None
+
+
+def _edge_fleet_from_runtime_paths(runtime_paths: constants.RuntimePaths) -> EdgeFleet | None:
+    """Create an EdgeFleet instance from runtime configuration, or None if disabled.
+
+    Missing flag, missing key, or a key shorter than 32 decoded bytes keeps
+    the fleet unmounted (FR6.1 / NFR1).
+    """
+    enabled = runtime_paths.env_flag(_EDGE_FLEET_ENABLED_ENV, default=False)
+    if not enabled:
+        return None
+
+    raw_key = runtime_paths.env_value(_EDGE_FLEET_ENROLLMENT_KEY_ENV)
+    if not raw_key:
+        logger.warning("Edge fleet is enabled but %s is not set — disabling", _EDGE_FLEET_ENROLLMENT_KEY_ENV)
+        return None
+
+    try:
+        key = base64.urlsafe_b64decode(raw_key + "=" * (-len(raw_key) % 4))
+    except (ValueError, TypeError) as exc:
+        logger.error("Edge fleet enrollment key is not valid Base64: %s", exc)
+        return None
+
+    if len(key) < 32:
+        logger.error("Edge fleet enrollment key must decode to at least 32 bytes (got %d)", len(key))
+        return None
+
+    fleet_path_str = runtime_paths.env_value(_EDGE_FLEET_PATH_ENV)
+    fleet_path = Path(fleet_path_str) if fleet_path_str else runtime_paths.storage_root / "edge_fleet.db"
+    authority = EnrollmentAuthority(key)
+    allowlist = _edge_fleet_node_allowlist(runtime_paths)
+    fleet = EdgeFleet(fleet_path, authority, node_allowlist=allowlist)
+    logger.info("Edge fleet enabled", extra={"path": str(fleet_path), "key_length": len(key)})
+    return fleet
+
+
+def _mount_edge_fleet(api_app: FastAPI, fleet: EdgeFleet | None) -> None:
+    """Mount edge fleet routers if a fleet instance is provided (FR6.1)."""
+    if fleet is None:
+        logger.info("Edge fleet is disabled — no routes mounted")
+        return
+
+    api_app.include_router(create_edge_fleet_router(fleet))
+    api_app.include_router(
+        create_edge_fleet_admin_router(fleet),
+        dependencies=[Depends(verify_user)],
+    )
+    logger.info("Edge fleet routes mounted")
+
+
+def edge_fleet_activation_status(
+    *,
+    enabled: bool,
+    healthy_nodes: int | None = None,
+    error: str | None = None,
+) -> str:
+    """Return the single operator-quotable activation-status sentence (C6 / FR5.1)."""
+    if not enabled:
+        return EDGE_FLEET_STATUS_UNMOUNTED
+    if error:
+        return EDGE_FLEET_STATUS_ERROR
+    count = 0 if healthy_nodes is None else healthy_nodes
+    noun = "node" if count == 1 else "nodes"
+    return f"Edge fleet is mounted with {count} healthy {noun}."
+
+
+async def _edge_fleet_health_fragment() -> dict[str, object]:
+    """Build the GET /api/health ``edge_fleet`` fragment (C6)."""
+    fleet = _edge_fleet_instance
+    if fleet is None:
+        return {
+            "enabled": False,
+            "status": edge_fleet_activation_status(enabled=False),
+        }
+    try:
+        nodes = await fleet.healthy_nodes(
+            observed_at=datetime.now(UTC),
+            max_age=_EDGE_FLEET_HEALTH_MAX_AGE,
+        )
+    except Exception as exc:
+        logger.error("Edge fleet health probe failed: %s", exc)
+        return {
+            "enabled": True,
+            "error": str(exc),
+            "status": edge_fleet_activation_status(enabled=True, error=str(exc)),
+        }
+    count = len(nodes)
+    return {
+        "enabled": True,
+        "healthy_nodes": count,
+        "status": edge_fleet_activation_status(enabled=True, healthy_nodes=count),
+    }
 
 
 @dataclass(frozen=True)
@@ -510,6 +625,14 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         "Published knowledge index refresh is scheduled by Git polling, filesystem watch, on access, or explicit API actions",
     )
 
+    edge_fleet = _edge_fleet_instance
+    if edge_fleet is not None:
+        try:
+            await edge_fleet.open()
+            logger.info("Edge fleet database opened")
+        except Exception as exc:
+            logger.error("Failed to open edge fleet database: %s", exc)
+
     stop_event = asyncio.Event()
     watch_task = asyncio.create_task(_watch_config(stop_event, _app))
     worker_cleanup_task = asyncio.create_task(_worker_cleanup_loop(stop_event, _app))
@@ -525,6 +648,12 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await worker_cleanup_task
     if standalone_knowledge_source_watcher is not None:
         await standalone_knowledge_source_watcher.shutdown()
+    if edge_fleet is not None:
+        try:
+            await edge_fleet.close()
+            logger.info("Edge fleet database closed")
+        except Exception as exc:
+            logger.error("Failed to close edge fleet database: %s", exc)
     if api_owned_knowledge_refresh_scheduler is not None:
         await api_owned_knowledge_refresh_scheduler.shutdown()
 
@@ -722,6 +851,10 @@ app.include_router(report_publishing_public_router)
 app.include_router(external_triggers_router)
 app.include_router(dynamic_workflows_router, dependencies=[Depends(verify_user)])
 
+# Mount edge fleet only when the flag and enrollment key are valid (FR6.1).
+_edge_fleet_instance = _edge_fleet_from_runtime_paths(_runtime_paths)
+_mount_edge_fleet(app, _edge_fleet_instance)
+
 
 @app.get("/api/health")
 async def health_check(request: Request) -> JSONResponse:
@@ -737,6 +870,7 @@ async def health_check(request: Request) -> JSONResponse:
         "status": "healthy",
         "last_sync_time": sync_health.last_sync_time.isoformat() if sync_health.last_sync_time is not None else None,
         "e2ee": e2ee_stats().as_dict(),
+        "edge_fleet": await _edge_fleet_health_fragment(),
     }
     if sync_health.stale_entities:
         response["stale_sync_entities"] = list(sync_health.stale_entities)

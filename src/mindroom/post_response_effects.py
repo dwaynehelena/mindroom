@@ -7,7 +7,9 @@ from typing import TYPE_CHECKING
 
 from mindroom import interactive
 from mindroom.background_tasks import create_background_task
+from mindroom.flight_recorder import record_flight_event
 from mindroom.interactive_models import InteractivePrompt
+from mindroom.learning_runtime import capture_visible_reply_learning_event
 from mindroom.matrix.conversation_reads import DeliveredResponse
 from mindroom.runtime_protocols import SupportsClientConfig  # noqa: TC001
 from mindroom.thread_summary import maybe_generate_thread_summary
@@ -58,6 +60,8 @@ class PostResponseEffectsDeps:
     persist_response_event_id: Callable[[str, str], None] | None = None
     should_queue_thread_summary: Callable[[str, str, int | None], bool] | None = None
     queue_thread_summary: Callable[[str, str, str | None, DeliveredResponse], None] | None = None
+    runtime_paths: RuntimePaths | None = None
+    agent_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -170,6 +174,8 @@ class PostResponseEffectsSupport:
             persist_response_event_id=persist_response_event_id,
             should_queue_thread_summary=self._should_queue_thread_summary,
             queue_thread_summary=self._queue_thread_summary,
+            runtime_paths=self.runtime_paths,
+            agent_name=self.agent_name,
         )
 
 
@@ -263,4 +269,58 @@ async def apply_post_response_effects(
                 event_id=response_event_id,
                 body=final_delivery_outcome.final_visible_body or "",
             ),
+        )
+
+    await _maybe_promote_visible_reply_learning(
+        final_delivery_outcome,
+        outcome,
+        deps,
+        response_event_id,
+    )
+
+
+async def _maybe_promote_visible_reply_learning(
+    final_delivery_outcome: FinalDeliveryOutcome,
+    outcome: ResponseOutcome,
+    deps: PostResponseEffectsDeps,
+    response_event_id: str | None,
+) -> None:
+    """C7: SharedRuntime writes FlightRecorder; Learning Runtime then calls LearningCapture."""
+    if (
+        deps.runtime_paths is None
+        or outcome.response_run_id is None
+        or response_event_id is None
+        or not outcome.run_succeeded
+        or final_delivery_outcome.terminal_status != "completed"
+        or final_delivery_outcome.suppressed
+        or not final_delivery_outcome.is_visible_response
+    ):
+        return
+    try:
+        await record_flight_event(
+            deps.runtime_paths,
+            run_id=outcome.response_run_id,
+            kind="message",
+            payload={
+                "agent_name": deps.agent_name,
+                "direction": "outbound",
+                "event_id": response_event_id,
+                "is_visible_response": True,
+                "origin": "visible_reply",
+                "status": "completed",
+                "suppressed": False,
+            },
+            side_effect=True,
+        )
+        await capture_visible_reply_learning_event(
+            deps.runtime_paths,
+            run_id=outcome.response_run_id,
+            event_id=response_event_id,
+            agent_name=deps.agent_name,
+        )
+    except Exception:
+        deps.logger.exception(
+            "Learning promotion after visible delivery failed",
+            run_id=outcome.response_run_id,
+            response_event_id=response_event_id,
         )

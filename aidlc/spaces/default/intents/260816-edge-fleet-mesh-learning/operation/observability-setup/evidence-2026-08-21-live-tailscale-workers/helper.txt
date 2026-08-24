@@ -1,0 +1,7 @@
+✅ Tailscale connected
+   Node: macbook-pro-3.tail9e4b21.ts.net
+   IP: 100.80.168.13
+   Online peers: 2
+TailscaleCheckResult(status='connected', node_name='macbook-pro-3.tail9e4b21.ts.net', tailscale_ip='100.80.168.13', online_nodes=2, error=None)
+require_tailscale: succeeded
+TailscaleCheckResult(status='connected', node_name='macbook-pro-3.tail9e4b21.ts.net', tailscale_ip='100.80.168.13', online_nodes=2, error=None)

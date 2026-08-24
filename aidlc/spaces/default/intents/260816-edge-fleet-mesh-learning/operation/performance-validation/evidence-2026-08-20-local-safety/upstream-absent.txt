@@ -1,0 +1,5 @@
+exists=False /Users/dwayne/mindroom/aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/construction/nfr-requirements
+exists=False /Users/dwayne/mindroom/aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/construction/nfr-design
+exists=False /Users/dwayne/mindroom/aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/construction/infrastructure-design
+stand-in performance-requirements = construction/build-and-test/nfr-validation-matrix.md (no quantitative latency/throughput NFR)
+stand-in dashboards = operation/observability-setup/dashboards.md (present)

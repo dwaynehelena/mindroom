@@ -1,0 +1,21 @@
+{
+  "stage_slug": "approval-handoff",
+  "selections": [
+    {
+      "candidate_id": "c3",
+      "type": "learning",
+      "scope": "project",
+      "heading": "## Corrections",
+      "source": "orchestrator",
+      "text": "ALWAYS treat a skipped Ideation stage as absent: confirm that entering the next phase without it is acceptable, and do not ask questions that presuppose the missing artifact"
+    },
+    {
+      "candidate_id": "c4",
+      "type": "learning",
+      "scope": "project",
+      "heading": "## Corrections",
+      "source": "orchestrator",
+      "text": "ALWAYS confirm AI-only delivery when team formation was skipped, rather than asking whether mobs are staffed"
+    }
+  ]
+}

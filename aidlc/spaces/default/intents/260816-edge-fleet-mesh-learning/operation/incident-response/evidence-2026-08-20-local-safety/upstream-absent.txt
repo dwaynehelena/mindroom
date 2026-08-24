@@ -1,0 +1,2 @@
+exists=False /Users/dwayne/mindroom/aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/construction/nfr-design
+exists=False /Users/dwayne/mindroom/aidlc/spaces/default/intents/260816-edge-fleet-mesh-learning/construction/infrastructure-design

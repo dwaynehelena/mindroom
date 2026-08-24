@@ -1,0 +1,3 @@
+7:2026-08-20T20:21:42.509567Z [info     ] Edge fleet enabled             [mindroom.api.main] extra={'path': '/Users/dwayne/.mindroom/mindroom_data/edge_fleet.db', 'key_length': 48}
+8:2026-08-20T20:21:42.682942Z [info     ] Edge fleet routes mounted      [mindroom.api.main]
+52:2026-08-20T20:21:43.159702Z [info     ] Edge fleet database opened     [mindroom.api.main]

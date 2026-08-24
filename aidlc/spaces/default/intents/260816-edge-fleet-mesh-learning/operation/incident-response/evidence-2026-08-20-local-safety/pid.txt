@@ -1,0 +1,2 @@
+  PID STARTED                      ELAPSED COMMAND
+14783 Fri Aug 21 06:21:35 2026       19:41 /Users/dwayne/mindroom/.venv/bin/python3 /Users/dwayne/mindroom/.venv/bin/mindroom run

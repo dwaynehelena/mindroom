@@ -1,0 +1,13 @@
+path=/Users/dwayne/.mindroom/mindroom_data/edge_fleet.db
+size=45056
+mtime=2026-08-10T21:34:08.987717+00:00
+integrity=ok
+journal=wal
+counts={'edge_node': 10, 'edge_job': 6, 'edge_enrollment_nonce': 19, 'edge_request_nonce': 24, 'edge_fleet_audit': 0}
+jobs=[('completed', 6)]
+audit_rows=[]
+open_by_pid14783=True
+python3.1 14783 dwayne  txt       REG                1,7    32768            17919073 /Users/dwayne/.mindroom/mindroom_data/edge_fleet.db-shm
+python3.1 14783 dwayne    9u      REG                1,7    45056            10131456 /Users/dwayne/.mindroom/mindroom_data/edge_fleet.db
+python3.1 14783 dwayne   11u      REG                1,7        0            17919072 /Users/dwayne/.mindroom/mindroom_data/edge_fleet.db-wal
+python3.1 14783 dwayne   12u      REG                1,7    32768            17919073 /Users/dwayne/.mindroom/mindroom_data/edge_fleet.db-shm

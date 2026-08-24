@@ -1,0 +1,21 @@
+{
+  "stage_slug": "reverse-engineering",
+  "selections": [
+    {
+      "candidate_id": "c1",
+      "type": "learning",
+      "scope": "project",
+      "heading": "## Corrections",
+      "source": "orchestrator",
+      "text": "ALWAYS treat a recorded repo set that names only the workflow framework as a birth-time mis-capture when the intent's activation surface lives in the workspace product code, and confirm the repo set before scanning"
+    },
+    {
+      "candidate_id": "c3",
+      "type": "learning",
+      "scope": "project",
+      "heading": "## Corrections",
+      "source": "orchestrator",
+      "text": "ALWAYS halt Reverse Engineering before scanning when the recorded repo set would build a knowledge base of the wrong codebase"
+    }
+  ]
+}

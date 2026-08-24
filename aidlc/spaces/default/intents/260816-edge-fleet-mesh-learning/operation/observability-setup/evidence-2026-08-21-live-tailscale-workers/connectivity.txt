@@ -1,0 +1,8 @@
+=== tailscale status ===
+100.80.168.13   macbook-pro-3  dwaynehelena@  macOS  -                                                            
+100.83.214.58   iphone182      dwaynehelena@  iOS    active; direct 192.168.68.121:41641                          
+100.87.212.111  macbook-pro    dwaynehelena@  macOS  active; direct 192.168.68.117:41641, tx 65609860 rx 9135172  
+=== ping iphone182 ===
+pong from iphone182 (100.83.214.58) via 192.168.68.121:41641 in 49ms
+=== ping macbook-pro ===
+pong from macbook-pro (100.87.212.111) via 192.168.68.117:41641 in 11ms

@@ -1,0 +1,19 @@
+did-not-run: aws ssm create-document
+did-not-run: aws ssm send-command
+did-not-run: aws ssm start-automation-execution
+did-not-run: aws ssm-incidents create-response-plan
+did-not-run: aws ssm-incidents start-incident
+did-not-run: aws backup create-backup-plan
+did-not-run: aws backup start-backup-job
+did-not-run: aws sns publish
+did-not-run: aws cloudwatch put-metric-alarm
+did-not-run: terraform apply
+did-not-run: kubectl apply
+did-not-run: launchctl kickstart
+did-not-run: write ~/.mindroom/.env
+did-not-run: python -m mindroom.edge_node
+did-not-run: DELETE /api/edge-fleet-admin/nodes
+did-not-run: rm edge_fleet.db
+did-not-run: gh workflow run
+which aws=not-found (not invoked)
+which kubectl=not-found (not invoked)

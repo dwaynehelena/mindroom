@@ -1,0 +1,12 @@
+did-not-run: aws cloudwatch put-dashboard
+did-not-run: aws cloudwatch put-metric-alarm
+did-not-run: aws logs put-query-definition
+did-not-run: aws xray
+did-not-run: terraform apply
+did-not-run: kubectl apply
+did-not-run: launchctl kickstart
+did-not-run: write ~/.mindroom/.env
+did-not-run: python -m mindroom.edge_node
+did-not-run: gh workflow run
+which aws=not-found (not invoked)
+which kubectl=not-found (not invoked)

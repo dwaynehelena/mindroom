@@ -1,0 +1,4 @@
+exists=True
+path=/Users/dwayne/.mindroom/backups/20260817T231200Z-pre-upgrade-2026.8.79/mindroom_data/edge_fleet.db
+size=45056
+mtime=2026-08-10T21:34:08+00:00

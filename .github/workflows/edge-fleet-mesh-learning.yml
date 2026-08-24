@@ -1,0 +1,48 @@
+name: edge-fleet-mesh-learning
+
+# Intent 260816-edge-fleet-mesh-learning (U1–U4).
+# Enforces the pytest commands recorded in
+# aidlc/.../construction/build-and-test/test-results.md
+# (build-test-results) and summarized in build-and-test-summary.
+# Does not claim full-suite or live worker-over-Tailscale coverage.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  intent-scoped:
+    name: U1–U4 intent suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python 3.13
+        run: uv python install 3.13
+
+      - name: Install locked dev dependencies
+        run: uv sync --locked --group dev
+
+      - name: Run U1–U4 intent-scoped tests
+        run: |
+          PYTHON="$(uv run python -c 'import sys; print(sys.executable)')"
+          PYTHON="$PYTHON" bash scripts/testing/run_edge_fleet_mesh_learning_ci.sh -p no:cacheprovider
+
+      - name: Check for uncommitted changes
+        run: |
+          git diff --exit-code || {
+            echo "::error::Intent-scoped tests produced uncommitted file changes."
+            git diff --stat
+            exit 1
+          }
