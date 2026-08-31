@@ -68,7 +68,9 @@ jobs:
       plugin_ref: main
       artifact_name: ${{ matrix.artifact_name }}
       mindroom_repository: ${{ github.repository }}
-      mindroom_ref: ${{ inputs.mindroom_ref || github.sha }}
+      # thread-export-plugin needs mindroom.config.access (upstream c7850ecd),
+      # which this fork's main predates; test against the upstream mirror branch.
+      mindroom_ref: ${{ inputs.mindroom_ref || 'upstream-main' }}
 
   report-nightly:
     name: Report nightly result
