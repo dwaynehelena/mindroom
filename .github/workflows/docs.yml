@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.repository == 'mindroom-ai/mindroom'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,7 +50,7 @@ jobs:
           path: "./site"
 
   deploy:
-    if: github.event_name != 'pull_request'
+    if: github.repository == 'mindroom-ai/mindroom' && github.event_name != 'pull_request'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
