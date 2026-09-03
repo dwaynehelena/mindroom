@@ -67,8 +67,10 @@ jobs:
       plugin_repository: ${{ matrix.plugin_repository }}
       plugin_ref: main
       artifact_name: ${{ matrix.artifact_name }}
-      mindroom_repository: ${{ github.repository }}
-      mindroom_ref: ${{ inputs.mindroom_ref || github.sha }}
+      # Plugins track official core APIs (e.g. clear_thread_export_root).
+      # This fork lags that surface; test against upstream unless overridden.
+      mindroom_repository: mindroom-ai/mindroom
+      mindroom_ref: ${{ inputs.mindroom_ref || 'main' }}
 
   report-nightly:
     name: Report nightly result
@@ -92,11 +94,30 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           title="Plugin fleet nightly failure"
+          set +e
+          issue_list_err="$(mktemp)"
           issue_number="$(
             gh issue list --repo "$REPOSITORY" --state open --limit 100 \
               --json number,title --jq ".[] | select(.title == \"$title\") | .number" \
+              2>"$issue_list_err" \
               | head -1
           )"
+          list_status=$?
+          set -e
+          if [[ "$list_status" -ne 0 ]]; then
+            err="$(cat "$issue_list_err")"
+            if grep -qiE 'Issues (are )?disabled|Issues disabled' <<< "$err"; then
+              {
+                echo 'Issues are disabled on this repository; skipping nightly issue update.'
+                echo "Inventory: $INVENTORY_RESULT"
+                echo "Compatibility: $COMPATIBILITY_RESULT"
+                echo "Run: $RUN_URL"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "$err" >&2
+            exit "$list_status"
+          fi
           if [[ "$INVENTORY_RESULT" == "success" && "$COMPATIBILITY_RESULT" == "success" ]]; then
             if [[ -n "$issue_number" ]]; then
               gh issue close "$issue_number" --repo "$REPOSITORY" \
@@ -115,5 +136,21 @@ jobs:
           if [[ -n "$issue_number" ]]; then
             gh issue edit "$issue_number" --repo "$REPOSITORY" --body "$body"
           else
-            gh issue create --repo "$REPOSITORY" --title "$title" --body "$body"
+            set +e
+            create_err="$(mktemp)"
+            gh issue create --repo "$REPOSITORY" --title "$title" --body "$body" 2>"$create_err"
+            create_status=$?
+            set -e
+            if [[ "$create_status" -ne 0 ]]; then
+              err="$(cat "$create_err")"
+              if grep -qiE 'Issues (are )?disabled|Issues disabled' <<< "$err"; then
+                {
+                  echo 'Issues are disabled on this repository; wrote nightly result to the job summary instead.'
+                  echo "$body"
+                } >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              echo "$err" >&2
+              exit "$create_status"
+            fi
           fi

@@ -75,7 +75,7 @@ networkPolicy:
   extraEgress: []
 
 runtime:
-  apiHost: 0.0.0.0
+  apiHost: 127.0.0.1
   apiPort: 8765
   logLevel: INFO
   timezone: ""

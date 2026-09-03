@@ -8,6 +8,7 @@ on:
 
 jobs:
   test:
+    if: github.repository == 'mindroom-ai/mindroom'
     runs-on: ubuntu-latest
     strategy:
       matrix:

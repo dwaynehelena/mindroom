@@ -27,6 +27,7 @@ from .local_stack import local_stack_setup
 from .migrate import config_migrate
 from .plugins import plugins_app
 from .service import service_app
+from .skill import skill_app
 from .trigger import trigger_app
 
 if TYPE_CHECKING:
@@ -69,6 +70,7 @@ app.add_typer(avatars_app, name="avatars")
 app.add_typer(threads_app, name="threads")
 app.add_typer(journal_app, name="journal")
 app.add_typer(service_app, name="service")
+app.add_typer(skill_app, name="skill")
 app.add_typer(trigger_app, name="trigger")
 
 
@@ -83,6 +85,53 @@ def _httpx_post(
     import httpx  # noqa: PLC0415
 
     return httpx.post(url, json=json, timeout=timeout, verify=verify)
+
+
+@app.command()
+def marketplace(
+    port: int = typer.Option(
+        9876,
+        "--port",
+        help="Port for the Skill Foundry marketplace server.",
+    ),
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        help="Bind address for the marketplace server.",
+    ),
+    open_browser: bool = typer.Option(
+        True,
+        "--open/--no-open",
+        help="Open the marketplace in the default browser.",
+    ),
+) -> None:
+    """Serve the Skill Foundry marketplace SPA and API.
+
+    Starts a lightweight local HTTP server that lets you browse, install,
+    update, and uninstall registry skills from a web UI.
+    """
+    import threading
+    import webbrowser
+
+    from mindroom.marketplace_server import run_marketplace_server
+
+    ready = threading.Event()
+    server_thread = threading.Thread(
+        target=run_marketplace_server,
+        kwargs={"host": host, "port": port, "ready_event": ready},
+        daemon=True,
+    )
+    server_thread.start()
+    ready.wait(timeout=10)
+
+    url = f"http://{'localhost' if host in ('127.0.0.1', '::1') else host}:{port}"
+    console.print(f"[green]Skill Foundry marketplace:[/green] {url}")
+    if open_browser:
+        webbrowser.open(url)
+    try:
+        server_thread.join()
+    except KeyboardInterrupt:
+        console.print("\nStopped")
 
 
 @app.command()
@@ -127,7 +176,7 @@ def run(
         help="Port for the bundled dashboard/API server",
     ),
     api_host: str = typer.Option(
-        "0.0.0.0",  # noqa: S104
+        "127.0.0.1",
         "--api-host",
         help="Host for the bundled dashboard/API server",
     ),
@@ -201,7 +250,7 @@ async def _run(
         from mindroom.frontend_assets import ensure_frontend_dist_dir  # noqa: PLC0415
 
         frontend_dir = ensure_frontend_dist_dir(runtime_paths)
-        display_host = "localhost" if api_host == "0.0.0.0" else api_host  # noqa: S104
+        display_host = "localhost" if api_host in ("127.0.0.1", "::1") else api_host
         if frontend_dir is None:
             console.print("Dashboard: unavailable (frontend assets missing)")
             console.print("  Install Bun or provide MINDROOM_FRONTEND_DIST when running from a source checkout.")

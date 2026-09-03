@@ -1,0 +1,51 @@
+========================================================================
+  P4 LIVE DEMO — external placement over the REAL mesh transport
+  P1 transport ENABLED (4 live Phase B gates passed)
+========================================================================
+
+[0] Live surface preflight
+  ✓ MindRoom API (:8765): reachable
+  ✓ Matrix homeserver (:8008): reachable
+  ✓ OpenClaw gateway (:18789): reachable
+
+[1] Place external HERMES message over real transport
+  ✓ hermes: transport=delivered rtt=220.90ms job=completed attested=True
+      node          : p4-demo-hermes-a4f99f9e
+      source        : p4-gateway
+      target        : hermes-edge-node (runtime=hermes)
+      transport     : edge-fleet HTTP over real mesh (live MindRoom API :8765)
+      enroll        : 48.37ms | lease+execute+complete round-trip
+
+[2] Place external OPENCLAW task over real transport
+  ✓ openclaw: transport=delivered rtt=149.22ms job=completed attested=True
+      node          : p4-demo-openclaw-a4f99f9e
+      source        : p4-gateway
+      target        : openclaw-edge-node (runtime=openclaw)
+      transport     : edge-fleet HTTP over real mesh (live MindRoom API :8765)
+      enroll        : 39.33ms | lease+execute+complete round-trip
+
+[3] Place MINDROOM room placement over real Matrix transport
+  ✓ mindroom: transport=delivered sync_verified=True rtt=3761.23ms
+      room          : !lynLWYGgdXsmjttHmb:localhost
+      thread_root   : $JraS0OgS--gb0iP1mEABH3kN55u4SQpsNz8xiGHiXa4
+      outbox        : mesh-outbox-p4-796ac5
+      source        : mindroom-gateway
+      target        : live-matrix-room/thread
+      transport     : MatrixMeshTransport + injected nio client (real Synapse :8008)
+
+[4] Phase B gate results (re-run live)
+  ✓ Phase B Unit1 (inverted enrollment handshake): LIVE_HANDSHAKE_PASSED
+  ✓ Phase B Unit2 (real Matrix thread delivery): GO
+  ✓ Phase B Unit3 (real deliver_stream tool-state posting): GO
+  ✓ Phase B Unit5 (real coordinator sync-token replay): GO
+
+------------------------------------------------------------------------
+  SUMMARY
+------------------------------------------------------------------------
+  blocked_items            : 0
+  p1_transport_enabled     : True
+  placements_delivered     : 3 / 3
+  phase_b_gates_passed     : 4 / 4
+  generated_at             : 2026-08-09T09:02:34.308437+00:00
+  machine-readable receipt : docs/p4_live_placement_demo_receipt.json
+========================================================================

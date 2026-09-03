@@ -8,6 +8,7 @@ on:
 
 jobs:
   markdown-code-runner:
+    if: github.repository == 'mindroom-ai/mindroom'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository

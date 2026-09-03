@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 WorkerStatus = Literal["starting", "ready", "idle", "failed"]
@@ -20,6 +21,7 @@ class WorkerSpec:
     mirrored_credential_services: frozenset[str] | None = None
     state_scope_worker_key: str | None = None
     resource_profile: ScriptResourceProfileName | None = None
+    skill_mounts: dict[str, Path] | None = None
 
 
 @dataclass(frozen=True, slots=True)

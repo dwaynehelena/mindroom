@@ -1250,7 +1250,11 @@ class TestAgentUserCreation:
     @pytest.mark.parametrize(
         ("colliding_entity_name", "agents", "teams"),
         [
-            ("router", {}, {}),
+            (
+                "router",
+                {"general": {"display_name": "GeneralAgent"}},
+                {},
+            ),
             ("general", {"general": {"display_name": "GeneralAgent"}}, {}),
             (
                 "helpers",

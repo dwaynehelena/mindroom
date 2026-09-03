@@ -27,6 +27,7 @@ from mindroom.agent_policy import (
     build_agent_policy_seeds,
     get_agent_delegation_closure,
     get_unsupported_team_agents,
+    purge_agent_from_delegation_closures,
     resolve_agent_policy_from_data,
     resolve_private_knowledge_base_agent,
     unsupported_team_agent_message,
@@ -51,7 +52,9 @@ from mindroom.config.matrix import (
     MatrixSyncConfig,
     MindRoomUserConfig,
 )
+from mindroom.config.privacy import PrivacyRoutingConfig  # noqa: TC001
 from mindroom.config.memory import MemoryBackend, MemoryConfig, MemorySearchConfig
+from mindroom.config.mesh import MeshConfig  # noqa: TC001
 from mindroom.config.models import (
     CompactionConfig,
     CompactionOverrideConfig,
@@ -67,6 +70,7 @@ from mindroom.config.runtime_overlays import (
     apply_runtime_approved_egress_overlay,
     strip_runtime_approved_egress_overlay_from_dump,
 )
+from mindroom.config.skill_foundry import SkillFoundryConfig  # noqa: TC001
 from mindroom.config.tool_entries import raw_tool_entry_name_and_lazy_flag_fields, raw_tools_entries
 from mindroom.config.voice import VoiceConfig
 from mindroom.config.yaml_includes import (
@@ -482,6 +486,18 @@ class Config(BaseModel):
         default_factory=list,
         description="Matrix user IDs of non-MindRoom bots (e.g., bridge bots) that should be treated like agents for response logic — their messages won't trigger the multi-human-thread mention requirement",
     )
+    privacy_routing: PrivacyRoutingConfig = Field(
+        default_factory=PrivacyRoutingConfig,
+        description="Governed privacy routing configuration for model and tool executors",
+    )
+    skill_foundry: SkillFoundryConfig = Field(
+        default_factory=SkillFoundryConfig,
+        description="Skill Foundry active-package installation and live execution configuration",
+    )
+    mesh: MeshConfig = Field(
+        default_factory=MeshConfig,
+        description="Agent Mesh configuration section (gateway-only runtime, loop prevention, etc.)",
+    )
 
     @field_validator("administrators")
     @classmethod
@@ -699,9 +715,52 @@ class Config(BaseModel):
     @model_validator(mode="after")
     def validate_team_agents(self) -> Config:
         """Ensure team members exist and do not use private requester-local state."""
+        self._reject_circular_team_references()
         for team_name, team_config in self.teams.items():
             self.assert_team_agents_supported(team_config.agents, team_name=team_name)
         return self
+
+    def _reject_circular_team_references(self) -> None:
+        """Reject self-referential or mutually-referential team membership at load time.
+
+        A team's ``agents`` list must name only real agents. When a member name is
+        itself a configured team, the membership graph can form a cycle (a team
+        containing itself, or two teams containing each other). Such a cycle is
+        ambiguous and cannot be materialized, so it is rejected explicitly here
+        instead of surfacing as a generic "unknown agent" error downstream.
+        """
+        team_names = set(self.teams)
+        if not team_names:
+            return
+
+        # Build the team-reference graph: team -> teams it names as members.
+        references: dict[str, set[str]] = {
+            team_name: {member for member in team_config.agents if member in team_names}
+            for team_name, team_config in self.teams.items()
+        }
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+        stack: list[str] = []
+
+        def _visit(team_name: str) -> None:
+            if team_name in visited:
+                return
+            if team_name in visiting:
+                cycle_start = team_name
+                cycle = stack[stack.index(cycle_start) :] + [cycle_start]
+                msg = f"Circular team reference detected: {' -> '.join(cycle)}"
+                raise ValueError(msg)
+            visiting.add(team_name)
+            stack.append(team_name)
+            for referenced in sorted(references[team_name]):
+                _visit(referenced)
+            stack.pop()
+            visiting.discard(team_name)
+            visited.add(team_name)
+
+        for team_name in sorted(team_names):
+            _visit(team_name)
 
     def _invalid_compaction_model_references(self) -> list[str]:
         """Return any compaction model references that point at unknown models."""
@@ -1690,6 +1749,29 @@ class Config(BaseModel):
             ),
             closures=closures,
         )
+
+    def purge_agent_references(
+        self,
+        agent_name: str,
+        *,
+        closures: dict[str, frozenset[str]] | None = None,
+    ) -> None:
+        """Purge one removed agent from every persisted reference table.
+
+        After an agent is removed, stale references to it can survive in three
+        places: delegation closures (cached reachability sets), team member
+        lists, and other agents' ``delegate_to`` lists. Each of these would
+        otherwise keep the removed agent reachable or materializable. This
+        method rewrites them in place so no dangling reference survives.
+        """
+        if closures is not None:
+            purge_agent_from_delegation_closures(agent_name, closures)
+        for team_config in self.teams.values():
+            if agent_name in team_config.agents:
+                team_config.agents = [member for member in team_config.agents if member != agent_name]
+        for agent_config in self.agents.values():
+            if agent_name in agent_config.delegate_to:
+                agent_config.delegate_to = [target for target in agent_config.delegate_to if target != agent_name]
 
     def get_unsupported_team_agents(
         self,

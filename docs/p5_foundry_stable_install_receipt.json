@@ -1,0 +1,46 @@
+{
+  "active_package": "mindroom-docs",
+  "completed_at": "2026-08-09T09:20:50.385158+00:00",
+  "foundry_package": {
+    "files": 70,
+    "integrity_manifest_sha256": "0db4792ce645a47c07d74bd93b1cb6236d25e7ffc659edcb9c674b9cff2d8d4d",
+    "name": "mindroom-docs",
+    "source": "/Users/dwayne/mindroom/skills/mindroom-docs",
+    "version_pinned": "1.0.0"
+  },
+  "generated_at": "2026-08-09T09:20:49.225005+00:00",
+  "install_receipt": {
+    "dependencies": [
+      "mindroom-docs"
+    ],
+    "install_mode": "STABLE",
+    "install_path": "/Users/dwayne/mindroom/.p5-evidence/skills/mindroom-docs",
+    "installed_at": 1786267249.5373938,
+    "integrity_check": {
+      "installed_files": 70,
+      "installed_manifest_sha256": "0db4792ce645a47c07d74bd93b1cb6236d25e7ffc659edcb9c674b9cff2d8d4d",
+      "matches_published_manifest": true,
+      "verify_installation_issues": []
+    },
+    "package": "mindroom-docs",
+    "registry_version": "1.0.0",
+    "reproducible": true,
+    "source_origin": "registry",
+    "version": "1.0.0"
+  },
+  "live_skill_execution": {
+    "argument": "llms.txt",
+    "bytes_read": 4477,
+    "content_prefix": "# MindRoom\n\n> AI agents that live in Matrix and work everywhere via bridges\n\n## MindRoom Docs\n\n- [Home](https://docs.mindroom.chat/)\n- [Overview](https://docs.mindroom.chat/getting-started/)\n- [iOS Be",
+    "executed_via": "agno skill tool entrypoint on STABLE-installed package",
+    "skill": "mindroom-docs",
+    "source_path": "/Users/dwayne/mindroom/.p5-evidence/skills/mindroom-docs",
+    "status": "completed",
+    "tool": "get_skill_reference",
+    "version": "1.0.0"
+  },
+  "phase": "P5 EXECUTION",
+  "result": "PASS",
+  "schema": "mindroom.p5-foundry-stable-install-execution/1",
+  "scope": "active-package STABLE install from foundry/marketplace + one live skill execution"
+}

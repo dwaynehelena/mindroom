@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from mindroom.agent_policy import (
     build_agent_policy_seeds,
+    get_agent_delegation_closure,
+    purge_agent_from_delegation_closures,
     resolve_agent_policy_from_data,
     resolve_agent_policy_index,
     resolve_private_knowledge_base_agent,
@@ -155,3 +157,39 @@ def test_resolve_private_knowledge_base_agent_requires_active_private_knowledge(
 
     assert resolve_private_knowledge_base_agent("__agent_private__:mind", seeds) == "mind"
     assert resolve_private_knowledge_base_agent("__agent_private__:assistant", seeds) is None
+
+
+def test_purge_agent_from_delegation_closures_removes_dangling_references() -> None:
+    """Removing an agent must purge it from every cached delegation closure.
+
+    This proves the gap closed by Finding 4: after an agent is removed, a
+    shared closure cache can still name it, so downstream consumers (team
+    eligibility, unsupported-team detection, OpenAI-compat routing) would keep
+    treating the removed agent as reachable. Purging must drop the removed
+    agent's own entry and rewrite every other cached closure to exclude it.
+    """
+    seeds = build_agent_policy_seeds(
+        {
+            "leader": AgentConfig(display_name="Leader", delegate_to=["helper"]),
+            "helper": AgentConfig(display_name="Helper", delegate_to=["mind"]),
+            "mind": AgentConfig(display_name="Mind", private={"per": "user"}),
+        },
+        default_worker_scope=None,
+    )
+    closures: dict[str, frozenset[str]] = {}
+    assert get_agent_delegation_closure("leader", seeds, closures=closures) == frozenset(
+        {"leader", "helper", "mind"},
+    )
+    assert get_agent_delegation_closure("helper", seeds, closures=closures) == frozenset({"helper", "mind"})
+    assert get_agent_delegation_closure("mind", seeds, closures=closures) == frozenset({"mind"})
+
+    # Remove "mind" and purge the shared closure cache.
+    purge_agent_from_delegation_closures("mind", closures)
+
+    # No cached closure may still reference the removed agent.
+    assert closures == {
+        "leader": frozenset({"leader", "helper"}),
+        "helper": frozenset({"helper"}),
+    }
+    assert all("mind" not in closure for closure in closures.values())
+    assert "mind" not in closures

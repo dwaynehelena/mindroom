@@ -1,0 +1,56 @@
+========================================================================
+  P5 FOUNDRY/MARKETPLACE — ACTIVE-PACKAGE STABLE INSTALL + LIVE SKILL RUN
+  P5 EXECUTION (foundry/marketplace that was just committed)
+========================================================================
+
+[1] Active package selection
+  package    : mindroom-docs   (referenced by agent_builder in config.yaml)
+  source     : skills/mindroom-docs
+  pinned     : 1.0.0           (STABLE, versioned, reproducible)
+  files      : 70
+  integrity  : sha256 manifest 0db4792ce645a47c07d74bd93b1cb6236d25e7ffc659edcb9c674b9cff2d8d4d
+
+[2] STABLE install (foundry/marketplace installer)
+  install_mode : STABLE        (versioned + reproducible, NOT dev/volatile)
+  source_origin: registry
+  installed    : /private/tmp/p5-scratch/skills/mindroom-docs
+  installed_sha: 0db4792ce645a47c07d74bd93b1cb6236d25e7ffc659edcb9c674b9cff2d8d4d
+  matches      : true
+  verify       : [no issues]
+  registry     : version 1.0.0 recorded
+  STABLE_INSTALL_OK package=mindroom-docs version=1.0.0 files=70
+
+[3] ONE live skill execution (agno skill tool API on installed package)
+  tool     : get_skill_reference
+  skill    : mindroom-docs v1.0.0
+  argument : llms.txt
+  bytes    : 4477
+  status   : completed
+  LIVE_SKILL_EXECUTION_OK skill=mindroom-docs tool=get_skill_reference arg=llms.txt bytes=4477
+
+[4] Test result
+  tests/test_skill_foundry_integration.py
+  tests/test_installer.py
+  tests/test_skill_deps.py
+  95 passed in 16.27s
+
+[5] External blocker
+  Remote registry https://skills.openclaw.ai/index.json is unreachable
+  (DNS/network failure: nodename nor servname provided). The active package
+  was staged locally from the committed foundry/marketplace source, so the
+  STABLE install + live execution completed end-to-end without that blocker.
+  No blocker on the P5 deliverable itself.
+
+------------------------------------------------------------------------
+  SUMMARY
+------------------------------------------------------------------------
+  result            : PASS
+  package           : mindroom-docs
+  version           : 1.0.0
+  install_mode      : STABLE
+  integrity_check   : passed
+  live_execution    : completed (get_skill_reference llms.txt, 4477 bytes)
+  unit_tests        : 95 passed
+  external_blocker  : none for deliverable (remote registry unreachable, worked around)
+  machine-readable  : docs/p5_foundry_stable_install_receipt.json
+========================================================================

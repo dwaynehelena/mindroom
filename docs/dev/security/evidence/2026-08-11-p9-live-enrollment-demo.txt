@@ -1,0 +1,41 @@
+======================================================================
+P9 EDGE FLEET — LIVE CROSS-DEVICE ENROLLMENT DEMO
+======================================================================
+
+[0] Tailscale connectivity check (standing directive)
+✅ Tailscale connected
+   Node: macbook-pro-3.tail9e4b21.ts.net
+   IP: 100.80.168.13
+   Online peers: 1
+
+[1] Queue jobs (offline-capable)
+  queued demo-job-openclaw-001 for runtime=openclaw
+  queued demo-job-hermes-001 for runtime=hermes
+
+[2] Cross-device enrollment + job execution
+
+  --- Device: demo-openclaw-device (openclaw) ---
+  [demo-openclaw-device] enrollment token issued
+  [demo-openclaw-device] enrolled
+  [demo-openclaw-device] heartbeat sent
+  [demo-openclaw-device] no job available to lease
+
+  --- Device: demo-hermes-device (hermes) ---
+  [demo-hermes-device] enrollment token issued
+  [demo-hermes-device] enrolled
+  [demo-hermes-device] heartbeat sent
+  [demo-hermes-device] no job available to lease
+
+[3] Verify completed jobs via admin API
+  demo-job-openclaw-001: status=completed node=demo-openclaw-device result_attested=yes
+    result={"device": "demo-openclaw-device", "echo": {"module": "edge_fleet", "task": "refactor"}, "runtime": "openclaw"}
+  demo-job-hermes-001: status=completed node=demo-hermes-device result_attested=yes
+    result={"device": "demo-hermes-device", "echo": {"corpus": "edge_fleet_docs", "task": "summarize"}, "runtime": "hermes"}
+
+[4] Final node inventory
+  demo-hermes-device (hermes) caps=['nlp', 'memory'] last_seen=2026-08-10T17:29:44.433645Z
+  demo-openclaw-device (openclaw) caps=['code', 'browser'] last_seen=2026-08-10T17:29:44.416722Z
+
+======================================================================
+DEMO COMPLETE — all steps passed
+======================================================================
