@@ -35,6 +35,11 @@ if TYPE_CHECKING:
     from mindroom.tool_approval import BackgroundScriptToolOrigin
 
 _ApprovalStatus = Literal["approved", "denied", "expired"]
+
+# Learning-loop live reviews return this resolved-outcome value type. It is
+# distinct from the event journal's ApprovalDecision StrEnum, which enumerates
+# the durable decision labels.
+
 _ResolutionStatus = Literal["approved", "denied"]
 _MatrixEventPreparer = Callable[[str, str | None, dict[str, Any]], Awaitable[dict[str, Any] | None]]
 _MatrixDeliverySender = Callable[[MatrixDelivery], Awaitable[str]]
@@ -173,6 +178,16 @@ def _build_full_event_arguments(arguments: dict[str, Any]) -> dict[str, Any] | N
         return None
     sanitized = cast("dict[str, Any]", redact_sensitive_data(arguments))
     return sanitized if _full_arguments_json_bytes(sanitized) <= _MAX_FULL_ARGUMENTS_JSON_BYTES else None
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalDecision:
+    """One resolved approval outcome."""
+
+    status: _ApprovalStatus
+    reason: str | None
+    resolved_by: str | None
+    resolved_at: datetime
 
 
 @dataclass(frozen=True, slots=True)

@@ -145,88 +145,80 @@ class ConfigReloadLifecycle:
 
     async def _update_config(self) -> bool | None:
         """Reload config, returning whether agents changed or ``None`` when superseded."""
-        async with self._response_admission_apply_lock:
-            # Config validation executes plugin modules and walks the filesystem;
-            # keep it off the event loop (#1260). Admission stays open because
-            # nothing is published until loading and planning both succeed.
-            async with self.config_update_lock:
-                new_config = await asyncio.to_thread(
-                    load_config,
-                    self.runtime_paths,
-                    tolerate_plugin_load_errors=True,
-                )
-            self.loaded_source_files = new_config.source_files
-            runtime_config = self.current_config()
-            if self._fully_applied_config is None:
-                self._fully_applied_config = runtime_config
-            current_config = self._fully_applied_config
-            self.failed_reload_source_files = None
+        # Admission (and its serialization lock) is held by the reload-loop
+        # wrapper while the whole queued reload runs, so nothing here may take
+        # _response_admission_apply_lock again. The config update lock still
+        # serializes concurrent reload attempts from other owners.
+        async with self.config_update_lock:
+            new_config = await asyncio.to_thread(
+                load_config,
+                self.runtime_paths,
+                tolerate_plugin_load_errors=True,
+            )
+        self.loaded_source_files = new_config.source_files
+        runtime_config = self.current_config()
+        if self._fully_applied_config is None:
+            self._fully_applied_config = runtime_config
+        current_config = self._fully_applied_config
+        self.failed_reload_source_files = None
 
-            if current_config is None:
-                updated = False
-
-                async def load_initial_config() -> None:
-                    nonlocal updated
-                    async with self.config_update_lock:
-                        updated = await self.load_initial_config(new_config)
-                        self._fully_applied_config = new_config
-
-                applied = await self._apply_after_response_drain(
-                    load_initial_config,
-                    operation_name="configuration reload",
-                    request_is_current=self._reload_publication_is_current,
-                )
-                return updated if applied else None
-
-            if pending_event_journal_restart(new_config, self.runtime_paths):
-                # Adopted, not refused: the store was opened once at startup and
-                # every bot borrows that one, so no reload can move it and the
-                # planner has no journal case to act on. The reload is inert in
-                # exactly this one field, and the operator hears so here.
-                logger.warning(
-                    "config_reload_event_journal_pending_restart",
-                    reason="the event journal in force was opened at startup and cannot change until restart",
-                    requested=describe_event_journal(new_config.event_journal, self.runtime_paths),
-                )
-
-            current_authored_config = current_config.authored_model_dump()
-            new_authored_config = new_config.authored_model_dump()
-            runtime_authored_config = runtime_config.authored_model_dump() if runtime_config is not None else None
-            if (
-                self._incomplete_config is None
-                and current_authored_config == new_authored_config == runtime_authored_config
-            ):
-                logger.info("Configuration content unchanged; skipping publication")
-                return False
-            repair_config = self._incomplete_config
-            if (
-                repair_config is None
-                and runtime_config is not None
-                and runtime_authored_config != current_authored_config
-            ):
-                repair_config = runtime_config
-            if repair_config is not None:
-                logger.warning(
-                    "config_reload_repairing_partial_publication",
-                    action="restore last successful config before applying requested config",
-                )
-
+        if current_config is None:
             updated = False
 
-            async def apply_update_steps() -> None:
+            async def load_initial_config() -> None:
                 nonlocal updated
-                updated = await self._apply_config_update_steps(
-                    fully_applied_config=current_config,
-                    requested_config=new_config,
-                    repair_config=repair_config,
-                )
+                async with self.config_update_lock:
+                    updated = await self.load_initial_config(new_config)
+                    self._fully_applied_config = new_config
 
-            applied = await self._apply_after_response_drain(
-                apply_update_steps,
-                operation_name="configuration reload",
-                request_is_current=self._reload_publication_is_current,
+            await load_initial_config()
+            return updated
+
+        if pending_event_journal_restart(new_config, self.runtime_paths):
+            # Adopted, not refused: the store was opened once at startup and
+            # every bot borrows that one, so no reload can move it and the
+            # planner has no journal case to act on. The reload is inert in
+            # exactly this one field, and the operator hears so here.
+            logger.warning(
+                "config_reload_event_journal_pending_restart",
+                reason="the event journal in force was opened at startup and cannot change until restart",
+                requested=describe_event_journal(new_config.event_journal, self.runtime_paths),
             )
-            return updated if applied else None
+
+        current_authored_config = current_config.authored_model_dump()
+        new_authored_config = new_config.authored_model_dump()
+        runtime_authored_config = runtime_config.authored_model_dump() if runtime_config is not None else None
+        if (
+            self._incomplete_config is None
+            and current_authored_config == new_authored_config == runtime_authored_config
+        ):
+            logger.info("Configuration content unchanged; skipping publication")
+            return False
+        repair_config = self._incomplete_config
+        if (
+            repair_config is None
+            and runtime_config is not None
+            and runtime_authored_config != current_authored_config
+        ):
+            repair_config = runtime_config
+        if repair_config is not None:
+            logger.warning(
+                "config_reload_repairing_partial_publication",
+                action="restore last successful config before applying requested config",
+            )
+
+        updated = False
+
+        async def apply_update_steps() -> None:
+            nonlocal updated
+            updated = await self._apply_config_update_steps(
+                fully_applied_config=current_config,
+                requested_config=new_config,
+                repair_config=repair_config,
+            )
+
+        await apply_update_steps()
+        return updated
 
     async def _apply_config_update_steps(
         self,
@@ -435,14 +427,7 @@ class ConfigReloadLifecycle:
             if not request_is_current():
                 self.response_admission_gate.reopen()
                 return False
-            if await self._should_defer_replacement_for_active_responses(
-                drain_state=drain_state,
-                active_response_count=self.response_admission_gate.in_flight_response_count,
-                loop=loop,
-                operation_name=operation_name,
-            ):
-                continue
-            self.response_admission_gate.close()
+            # Drained (or force bound reached): apply with admission closed.
             break
         else:
             return False
@@ -485,7 +470,11 @@ class ConfigReloadLifecycle:
                     # A newer config change superseded the current one.
                     continue
 
-                await self._apply_queued_config_reload()
+                await self.apply_with_response_admission(
+                    self._apply_queued_config_reload,
+                    operation_name="configuration reload",
+                    request_is_current=lambda requested_at=requested_at: self._requested_at == requested_at,
+                )
         finally:
             if self._reload_task is current_task:
                 self._reload_task = None
