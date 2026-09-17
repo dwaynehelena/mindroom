@@ -190,6 +190,7 @@ def test_plugin_fleet_registry_is_sorted_and_unique() -> None:
     assert repositories == sorted(repositories)
     assert len(repositories) == len(set(repositories))
     assert all(repository.count("/") == 1 for repository in repositories)
+    assert "mindroom-ai/thread-export-plugin" not in repositories
 
 
 def test_plugins_check_cli_reports_compatibility(tmp_path: Path) -> None:
